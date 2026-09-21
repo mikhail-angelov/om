@@ -1,0 +1,1 @@
+quark also appears in this plain text file, which must not be searched.
