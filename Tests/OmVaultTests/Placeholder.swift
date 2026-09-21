@@ -132,6 +132,12 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
             "No Heading.md",
             "README.md",
         ]
+        let expectedNames = [
+            "A Note With Spaces.md": "A Note With Spaces",
+            "Nested/Deep.md": "Deep",
+            "No Heading.md": "No Heading",
+            "README.md": "README",
+        ]
 
         XCTAssertEqual(
             notes.map(\.path).sorted(),
@@ -146,7 +152,7 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
             )
             XCTAssertEqual(
                 note.name,
-                (note.path as NSString).deletingPathExtension,
+                expectedNames[note.path],
                 "`name` must be the filename without `.md`, got \(note.name) for path \(note.path)"
             )
         }

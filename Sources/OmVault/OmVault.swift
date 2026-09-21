@@ -49,7 +49,7 @@ public struct VaultIndexer: Sendable {
         let notes = try files.map { file in
             let fileURL = file.url
             let relativePath = file.path
-            let name = (relativePath as NSString).deletingPathExtension
+            let name = fileURL.deletingPathExtension().lastPathComponent
             let contents = try String(contentsOf: fileURL, encoding: .utf8)
 
             return VaultNote(

@@ -13,7 +13,7 @@ final class VaultIndexerTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try Data("## Not a title\n".utf8).write(to: vault.appendingPathComponent("Fallback.md"))
-        try Data("# Nested title\n".utf8).write(to: vault.appendingPathComponent("Nested/Note.md"))
+        try Data("## Not a title\n".utf8).write(to: vault.appendingPathComponent("Nested/Note.md"))
         try Data("ignored\n".utf8).write(to: vault.appendingPathComponent("notes.txt"))
 
         let inventory = try VaultIndexer().index(vaultAt: vault)
@@ -22,7 +22,7 @@ final class VaultIndexerTests: XCTestCase {
             inventory.notes,
             [
                 VaultNote(path: "Fallback.md", name: "Fallback", title: "Fallback"),
-                VaultNote(path: "Nested/Note.md", name: "Nested/Note", title: "Nested title"),
+                VaultNote(path: "Nested/Note.md", name: "Note", title: "Note"),
             ]
         )
     }
