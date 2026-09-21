@@ -35,4 +35,50 @@ final class VaultEditorModelTests: XCTestCase {
             "# Edited\n\nLive preview text.\n"
         )
     }
+
+    func testFollowWikiLinkOpensNestedTargetAndPreservesSource() throws {
+        let vault = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let nested = vault.appendingPathComponent("Nested", isDirectory: true)
+        let sourceNote = vault.appendingPathComponent("Source.md")
+        let targetNote = nested.appendingPathComponent("Target.md")
+        let originalSource = """
+        # Source
+
+        [[tArGeT.md#Details]] [[TARGET|read more]]
+        """
+        defer { try? FileManager.default.removeItem(at: vault) }
+
+        try FileManager.default.createDirectory(
+            at: nested,
+            withIntermediateDirectories: true
+        )
+        try originalSource.write(to: sourceNote, atomically: true, encoding: .utf8)
+        try "# Target\n".write(to: targetNote, atomically: true, encoding: .utf8)
+
+        let model = VaultEditorModel()
+        try model.openVault(at: vault)
+        try model.selectNote(at: "Source.md")
+
+        XCTAssertEqual(
+            model.resolvedLinkIdentifiers,
+            ["tArGeT.md#Details", "read more"]
+        )
+
+        try model.followWikiLink("tArGeT.md#Details")
+
+        XCTAssertEqual(model.selectedPath, "Nested/Target.md")
+        XCTAssertEqual(model.source, "# Target\n")
+
+        try model.selectNote(at: "Source.md")
+
+        try model.followWikiLink("read more")
+
+        XCTAssertEqual(model.selectedPath, "Nested/Target.md")
+        XCTAssertEqual(model.source, "# Target\n")
+        XCTAssertEqual(
+            try String(contentsOf: sourceNote, encoding: .utf8),
+            originalSource
+        )
+    }
 }

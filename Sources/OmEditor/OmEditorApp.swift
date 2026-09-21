@@ -72,7 +72,9 @@ private struct VaultEditorView: View {
                     get: { model.source },
                     set: { model.updateSourceFromUI($0) }
                 ),
-                documentId: selectedPath
+                configuration: editorConfiguration,
+                documentId: selectedPath,
+                onLinkClick: model.followWikiLinkFromUI
             )
         } else {
             ContentUnavailableView(
@@ -87,6 +89,16 @@ private struct VaultEditorView: View {
         Binding(
             get: { model.selectedPath },
             set: { model.selectNoteFromUI(at: $0) }
+        )
+    }
+
+    private var editorConfiguration: MarkdownEditorConfiguration {
+        MarkdownEditorConfiguration(
+            services: MarkdownEditorServices(
+                wikiLinks: VaultWikiLinkResolver(
+                    resolvedIdentifiers: model.resolvedLinkIdentifiers
+                )
+            )
         )
     }
 
