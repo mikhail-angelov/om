@@ -11,6 +11,10 @@ let package = Package(
     targets: [
         .target(name: "OmVault"),
         .executableTarget(name: "om", dependencies: ["OmVault"]),
-        .testTarget(name: "OmVaultTests", dependencies: ["OmVault"]),
+        .testTarget(
+            name: "OmVaultTests",
+            dependencies: ["OmVault"],
+            exclude: ["Resources"]
+        ),
     ]
 )
