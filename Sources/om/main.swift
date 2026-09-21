@@ -5,7 +5,7 @@ enum CommandError: LocalizedError {
     case usage
 
     var errorDescription: String? {
-        "Usage: om <index|links> <vault> | om backlinks <vault> <note name> | om rename <vault> <old name> <new name>"
+        "Usage: om <index|links> <vault> | om <backlinks|search> <vault> <query> | om rename <vault> <old name> <new name>"
     }
 }
 
@@ -37,6 +37,12 @@ do {
         let vaultURL = URL(fileURLWithPath: arguments[2], isDirectory: true)
         try writeJSON(
             VaultBacklinkFinder().find(vaultAt: vaultURL, noteName: arguments[3])
+        )
+    case "search":
+        guard arguments.count == 4 else { throw CommandError.usage }
+        let vaultURL = URL(fileURLWithPath: arguments[2], isDirectory: true)
+        try writeJSON(
+            VaultSearcher().search(vaultAt: vaultURL, query: arguments[3])
         )
     case "rename":
         guard arguments.count == 5 else { throw CommandError.usage }
