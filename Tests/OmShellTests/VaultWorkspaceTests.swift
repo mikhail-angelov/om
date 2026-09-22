@@ -121,21 +121,24 @@ final class VaultWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.activePath, "Source.md")
         try workspace.goForward()
         XCTAssertEqual(workspace.activePath, "Target.md")
-        // Opening from the tree reuses the active tab and records the move, so
-        // the back arrow has somewhere to go. A second tab is asked for.
+        // Opening from the tree gives the note a tab of its own, and the
+        // window's history grows whether or not a tab was reused — which is
+        // what keeps the arrows usable for someone who never follows a link.
         try workspace.openNote(at: "Source.md")
-        XCTAssertEqual(workspace.tabs.count, 1)
-        XCTAssertTrue(workspace.canGoBack)
-        try workspace.openNoteInNewTab(at: "Target.md")
         XCTAssertEqual(workspace.tabs.count, 2)
+        XCTAssertTrue(workspace.canGoBack)
         try workspace.openNote(at: "Target.md")
         XCTAssertEqual(workspace.tabs.count, 2)
+        try workspace.goBack()
+        XCTAssertEqual(workspace.activePath, "Source.md")
 
         workspace.closeTab(id: workspace.activeTabID!)
         workspace.closeTab(id: workspace.activeTabID!)
         XCTAssertNil(workspace.activeTabID)
         XCTAssertEqual(logger.eventNames.filter { $0 == "tab.closed" }.count, 2)
-        XCTAssertEqual(logger.eventNames.filter { $0 == "history.back" }.count, 1)
+        // Two backs: one after following the link, one after opening two notes
+        // from the tree. The very first goBack had no history and stayed silent.
+        XCTAssertEqual(logger.eventNames.filter { $0 == "history.back" }.count, 2)
         XCTAssertEqual(logger.eventNames.filter { $0 == "history.forward" }.count, 1)
     }
 

@@ -124,6 +124,11 @@ public final class VaultWorkspace {
     public private(set) var status = NoteStatus.empty
     public private(set) var errorMessage: String?
     public private(set) var indexRevision = 0
+    /// Every note this window has opened, in order, and where in that order
+    /// the arrows currently stand. Per-tab history left both arrows grey for
+    /// anyone who only clicked around the tree.
+    public private(set) var history: [String] = []
+    public private(set) var historyIndex = -1
 
     public var activeTab: VaultTab? {
         guard let activeTabID else { return nil }
@@ -132,11 +137,8 @@ public final class VaultWorkspace {
 
     public var activePath: String? { activeTab?.path }
     public var activeText: String { activeTab?.text ?? "" }
-    public var canGoBack: Bool { (activeTab?.historyIndex ?? 0) > 0 }
-    public var canGoForward: Bool {
-        guard let tab = activeTab else { return false }
-        return tab.historyIndex + 1 < tab.history.count
-    }
+    public var canGoBack: Bool { historyIndex > 0 }
+    public var canGoForward: Bool { historyIndex + 1 < history.count }
     public var resolvedLinkIdentifiers: Set<String> {
         guard let sourcePath = activePath else { return [] }
         return Set(linksReport.links.filter { $0.from == sourcePath }.map { link in
@@ -230,14 +232,14 @@ public final class VaultWorkspace {
         savePreferences()
     }
 
-    /// Opens a note in the active tab, recording the move in that tab's
-    /// history. Opening always used to create a tab, which left every history
-    /// one entry long and both arrows permanently grey.
+    /// Opens a note in a tab of its own, as selecting one from the tree
+    /// always has. The back and forward arrows do not depend on this: they
+    /// walk the window's own history, which every open adds to.
     public func openNote(at path: String) throws {
-        try openNote(at: path, logEvent: true, addToHistory: true)
+        try openNote(at: path, logEvent: true, addToHistory: false)
     }
 
-    /// Opens a note in a tab of its own, leaving the active tab alone.
+    /// Kept as the explicit spelling; identical to `openNote(at:)`.
     public func openNoteInNewTab(at path: String) throws {
         try openNote(at: path, logEvent: true, addToHistory: false)
     }
@@ -423,18 +425,40 @@ public final class VaultWorkspace {
     }
 
     public func goBack() throws {
-        guard let index = activeTabIndex, tabs[index].historyIndex > 0 else { return }
-        tabs[index].historyIndex -= 1
-        try load(path: tabs[index].history[tabs[index].historyIndex], into: index)
-        logger.record(level: .info, event: "history.back", fields: ["path": .string(tabs[index].path)])
+        guard canGoBack else { return }
+        historyIndex -= 1
+        try revisit(history[historyIndex], event: "history.back")
     }
 
     public func goForward() throws {
-        guard let index = activeTabIndex,
-              tabs[index].historyIndex + 1 < tabs[index].history.count else { return }
-        tabs[index].historyIndex += 1
-        try load(path: tabs[index].history[tabs[index].historyIndex], into: index)
-        logger.record(level: .info, event: "history.forward", fields: ["path": .string(tabs[index].path)])
+        guard canGoForward else { return }
+        historyIndex += 1
+        try revisit(history[historyIndex], event: "history.forward")
+    }
+
+    /// Shows a note the arrows landed on without disturbing the history it
+    /// came from. A note whose tab is gone gets a new one.
+    private func revisit(_ path: String, event: String) throws {
+        guard notes.contains(where: { $0.path == path }) else { return }
+        if let existing = tabs.first(where: { $0.path == path }) {
+            activeTabID = existing.id
+        } else if let index = activeTabIndex {
+            try load(path: path, into: index)
+        } else {
+            try openNote(at: path, logEvent: false, addToHistory: false)
+        }
+        refreshActiveDetails()
+        savePreferences()
+        logger.record(level: .info, event: event, fields: ["path": .string(path)])
+    }
+
+    /// Records a visit unless the arrows are what caused it.
+    private func recordVisit(_ path: String) {
+        if historyIndex >= 0, history.indices.contains(historyIndex), history[historyIndex] == path {
+            return
+        }
+        history = Array(history.prefix(historyIndex + 1)) + [path]
+        historyIndex = history.count - 1
     }
 
     public func performSearch(_ query: String) throws {
@@ -495,6 +519,7 @@ public final class VaultWorkspace {
             tabs.append(tab)
             activeTabID = tab.id
         }
+        recordVisit(path)
         refreshActiveDetails()
         savePreferences()
         if logEvent {
@@ -511,6 +536,7 @@ public final class VaultWorkspace {
         tabs[index].history = Array(tabs[index].history.prefix(nextIndex)) + [path]
         tabs[index].historyIndex = nextIndex
         try load(path: path, into: index)
+        recordVisit(path)
         if let historyEvent {
             logger.record(level: .info, event: historyEvent, fields: ["path": .string(path)])
         }
