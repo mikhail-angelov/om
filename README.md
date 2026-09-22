@@ -1,0 +1,115 @@
+# om
+
+A local Markdown vault for macOS: a folder of `.md` files, a headless engine
+that understands the links between them, a command-line tool, and an editor
+with live preview.
+
+Nothing is synced anywhere. A vault is a directory; the notes in it are plain
+files you can edit with anything else.
+
+## Requirements
+
+macOS 14 or later and a Swift 6 toolchain. The vault engine and the CLI have no
+dependencies beyond Foundation; the editor uses
+[swift-markdown-engine](https://github.com/nodes-app/swift-markdown-engine).
+
+## Build and install
+
+```sh
+make            # list the targets
+make test       # run the suite
+make install    # build and put Om.app in ~/Applications
+make run        # install and launch
+```
+
+`make install` writes into `~/Applications` by default. To install elsewhere:
+
+```sh
+make install PREFIX=/Applications
+```
+
+`make release` runs the tests, builds the bundle and packages
+`build/Om-<version>.zip`. The version comes from `git describe`, so tag a
+commit before cutting one:
+
+```sh
+git tag -a v0.2.0 -m "Vault shell"
+make release
+```
+
+`make uninstall` removes the installed application; `make clean` removes build
+products.
+
+## The command-line tool
+
+`make cli` prints the path to the built binary. It reads a vault and writes
+JSON to stdout:
+
+```sh
+om index     <vault>                 # every note: path, name, title
+om links     <vault>                 # resolved links and broken ones
+om backlinks <vault> <note>          # what points at a note
+om rename    <vault> <old> <new>     # rename, updating every inbound link
+om search    <vault> <text>          # case-insensitive text search
+om log       [--tail N]              # recent entries from the event journal
+```
+
+`om rename` edits the vault in place. Copy a fixture before experimenting with
+it.
+
+## The editor
+
+`Om.app` opens a folder as a vault and remembers it, along with the tabs that
+were open, between launches.
+
+| | |
+|---|---|
+| `⌘F` | find inside the open note, with match count and `⌘G` to step |
+| `⌘⇧F` | search every note in the vault |
+| `⌘S` | save now — edits also autosave shortly after you stop typing |
+| `Esc` | close the in-note find bar |
+
+Notes and folders are created, renamed and deleted from the sidebar's context
+menu. Renaming a note rewrites every link that pointed at it, exactly as
+`om rename` does. Following a `[[link]]` moves the window's history, which the
+back and forward arrows walk.
+
+## Diagnostics
+
+Every user action is recorded as one JSON object per line in
+`~/Library/Logs/om/om.log`, and the file is rotated at 5 MB. `OM_LOG_LEVEL`
+sets the threshold (`debug`, `info`, `warn`, `error`; default `info`).
+
+An uncaught exception or a fatal signal is written as an `app.crash` entry,
+with its reason and a stack, before the process dies — the first version of
+this application vanished during AppKit layout and left nothing at all behind.
+An exception thrown by the rendering library is recorded as `render.failed` and
+does not take the editor with it.
+
+```sh
+tail -f ~/Library/Logs/om/om.log
+om log --tail 20
+```
+
+## Layout
+
+```text
+Sources/OmVault/       the vault engine: index, links, backlinks, rename, search
+Sources/OmShell/       application logic, headless — no SwiftUI, no AppKit
+Sources/OmEditor/      the SwiftUI layer, which only displays and sends intent
+Sources/om/            the command-line tool
+Sources/Om*Support/    small Objective-C bridges for the crash and render handlers
+Fixtures/vault/        a vault carrying every link shape the renamer must survive
+```
+
+The split between `OmShell` and `OmEditor` is deliberate: behaviour that lives
+inside a view cannot be tested without driving a user interface, and an earlier
+version of this application had three requirements that no test could reach for
+exactly that reason.
+
+## Specifications
+
+`BRIEF.md` and `BRIEF-2.md` are what the application was built against, phase by
+phase, with numbered acceptance criteria. They are kept as written, including
+the places where they turned out to be wrong: `docs/AI_LEARNED.md` records what
+each phase taught.
