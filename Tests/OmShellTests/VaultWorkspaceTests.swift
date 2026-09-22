@@ -98,6 +98,31 @@ final class VaultWorkspaceTests: XCTestCase {
         XCTAssertEqual(next.activePath, "Keep.md")
     }
 
+    func testSearchFindsNotesByNameAsWellAsByText() throws {
+        let vault = try makeVault([
+            "Untitled.md": "",
+            "Notes/Deep.md": "the word zarkonium lives here\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let workspace = VaultWorkspace(
+            logger: RecordingLogger(), preferences: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        try workspace.openVault(at: vault)
+
+        // An empty note is unreachable by content; its name is all there is.
+        try workspace.performSearch("title")
+        XCTAssertEqual(workspace.searchNameMatches, ["Untitled.md"])
+        XCTAssertTrue(workspace.searchResults.isEmpty)
+
+        try workspace.performSearch("ZARKONIUM")
+        XCTAssertEqual(workspace.searchResults.map(\.path), ["Notes/Deep.md"])
+        XCTAssertTrue(workspace.searchNameMatches.isEmpty)
+
+        try workspace.performSearch("   ")
+        XCTAssertTrue(workspace.searchResults.isEmpty)
+        XCTAssertTrue(workspace.searchNameMatches.isEmpty)
+    }
+
     func testTabsHistoryAndUnavailableBackAreDeterministic() throws {
         let vault = try makeVault([
             "Source.md": "# Source\n\n[[Target|same]]\n",

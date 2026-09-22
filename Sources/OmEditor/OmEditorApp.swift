@@ -140,6 +140,9 @@ private struct VaultEditorView: View {
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
                         .onSubmit { model.searchFromUI(searchQuery) }
+                        .onChange(of: searchQuery) { _, query in
+                            model.searchFromUI(query)
+                        }
                     if !searchQuery.isEmpty {
                         Button {
                             searchQuery = ""
@@ -160,9 +163,21 @@ private struct VaultEditorView: View {
                             rename: beginRename,
                             confirmDelete: beginDelete
                         )
-                    } else if model.searchResults.isEmpty {
+                    } else if model.searchResults.isEmpty, model.searchNameMatches.isEmpty {
                         Text("No matches").foregroundStyle(.secondary)
                     } else {
+                        if !model.searchNameMatches.isEmpty {
+                            Section("Names") {
+                                ForEach(model.searchNameMatches, id: \.self) { path in
+                                    Button {
+                                        model.selectNoteFromUI(at: path)
+                                    } label: {
+                                        Label(path, systemImage: "doc.text")
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
                         ForEach(Array(model.searchResults.enumerated()), id: \.offset) { _, match in
                             Button {
                                 model.selectNoteFromUI(at: match.path)

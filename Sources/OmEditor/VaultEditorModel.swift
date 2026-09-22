@@ -26,6 +26,7 @@ final class VaultEditorModel: ObservableObject {
     var expandedFolders: Set<String> { workspace.expandedFolders }
     var sortOrder: VaultSortOrder { workspace.sortOrder }
     var searchResults: [VaultSearchMatch] { workspace.searchResults }
+    var searchNameMatches: [String] { workspace.searchNameMatches }
     var backlinks: [String] { workspace.backlinks }
     var properties: [NoteProperty] { workspace.properties }
     var status: NoteStatus { workspace.status }

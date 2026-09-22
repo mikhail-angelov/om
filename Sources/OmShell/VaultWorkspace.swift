@@ -119,6 +119,12 @@ public final class VaultWorkspace {
     public private(set) var selectedFolderPath = ""
     public private(set) var searchQuery = ""
     public private(set) var searchResults: [VaultSearchMatch] = []
+    /// Notes whose own name matches the query. `VaultSearcher` reads contents
+    /// only — by the CLI contract it reports a path, a line and that line's
+    /// text, and a name has no line — so a note called "Untitled" was
+    /// unfindable by searching for "title". The name match lives here instead
+    /// of being forced into a shape that does not fit it.
+    public private(set) var searchNameMatches: [String] = []
     public private(set) var backlinks: [String] = []
     public private(set) var properties: [NoteProperty] = []
     public private(set) var status = NoteStatus.empty
@@ -464,10 +470,20 @@ public final class VaultWorkspace {
     public func performSearch(_ query: String) throws {
         let root = try requireVault()
         searchQuery = query
-        searchResults = try VaultSearcher().search(vaultAt: root, query: query).matches
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            searchNameMatches = []
+            return
+        }
+        searchResults = try VaultSearcher().search(vaultAt: root, query: trimmed).matches
+        searchNameMatches = notes
+            .map(\.path)
+            .filter { displayName(for: $0).range(of: trimmed, options: .caseInsensitive) != nil }
+            .sorted()
         logger.record(level: .info, event: "search.performed", fields: [
-            "query": .string(query),
-            "matches": .integer(searchResults.count),
+            "query": .string(trimmed),
+            "matches": .integer(searchResults.count + searchNameMatches.count),
         ])
     }
 
