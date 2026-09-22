@@ -1,11 +1,12 @@
 import Foundation
+import OmShell
 import OmVault
 
 enum CommandError: LocalizedError {
     case usage
 
     var errorDescription: String? {
-        "Usage: om <index|links> <vault> | om <backlinks|search> <vault> <query> | om rename <vault> <old name> <new name>"
+        "Usage: om <index|links> <vault> | om <backlinks|search> <vault> <query> | om rename <vault> <old name> <new name> | om log [--tail N]"
     }
 }
 
@@ -24,6 +25,13 @@ do {
     }
 
     switch arguments[1] {
+    case "log":
+        do {
+            let output = try EventLogCommand.output(arguments: Array(arguments.dropFirst(2)))
+            FileHandle.standardOutput.write(Data(output.utf8))
+        } catch EventLogCommandError.invalidArguments {
+            throw CommandError.usage
+        }
     case "index":
         guard arguments.count == 3 else { throw CommandError.usage }
         let vaultURL = URL(fileURLWithPath: arguments[2], isDirectory: true)

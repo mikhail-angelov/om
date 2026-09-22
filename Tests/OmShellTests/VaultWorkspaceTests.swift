@@ -1,0 +1,231 @@
+import Foundation
+import XCTest
+@testable import OmShell
+
+@MainActor
+final class VaultWorkspaceTests: XCTestCase {
+    func testOpenVaultBuildsNestedTitleTreeAndPersistsViewPreferences() throws {
+        let vault = temporaryVault()
+        let nested = vault.appendingPathComponent("Folder/Deep", isDirectory: true)
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defer {
+            try? FileManager.default.removeItem(at: vault)
+            defaults.removePersistentDomain(forName: defaultsSuiteName(defaults))
+        }
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "# Zulu Title\n".write(
+            to: vault.appendingPathComponent("Folder/Z.md"), atomically: true, encoding: .utf8
+        )
+        try "# Alpha Title\n".write(
+            to: nested.appendingPathComponent("A.md"), atomically: true, encoding: .utf8
+        )
+
+        let workspace = VaultWorkspace(logger: RecordingLogger(), preferences: defaults)
+        try workspace.openVault(at: vault)
+
+        XCTAssertEqual(workspace.tree.map(\.path), ["Folder"])
+        XCTAssertEqual(workspace.tree[0].children.map(\.title), ["Deep", "Zulu Title"])
+
+        workspace.setFolderExpanded("Folder", expanded: true)
+        workspace.setSortOrder(VaultSortOrder(field: .name, direction: .descending))
+
+        let reopened = VaultWorkspace(logger: RecordingLogger(), preferences: defaults)
+        try reopened.openVault(at: vault)
+        XCTAssertTrue(reopened.expandedFolders.contains("Folder"))
+        XCTAssertEqual(reopened.sortOrder, VaultSortOrder(field: .name, direction: .descending))
+    }
+
+    func testCreateRenameAndOccupiedOperationsEmitExactlyOneEvent() throws {
+        let vault = temporaryVault()
+        try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        try "# Existing\n".write(
+            to: vault.appendingPathComponent("Existing.md"), atomically: true, encoding: .utf8
+        )
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let logger = RecordingLogger()
+        let workspace = VaultWorkspace(logger: logger, preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        try workspace.openVault(at: vault)
+
+        XCTAssertEqual(try workspace.createFolder(named: "Ideas"), "Ideas")
+        workspace.selectFolder("Ideas")
+        let created = try workspace.createNote()
+        XCTAssertEqual(created, "Ideas/Untitled.md")
+        XCTAssertEqual(try workspace.createNote(), "Ideas/Untitled 2.md")
+
+        try workspace.renameNote(at: created, to: "Renamed")
+        XCTAssertTrue(workspace.tabs.contains { $0.path == "Ideas/Renamed.md" })
+        XCTAssertThrowsError(try workspace.renameNote(at: "Ideas/Renamed.md", to: "Untitled 2"))
+
+        XCTAssertThrowsError(try workspace.createFolder(named: "Ideas", in: ""))
+        XCTAssertEqual(logger.eventNames, [
+            "folder.created", "note.created", "note.created", "note.renamed",
+            "operation.rejected", "operation.rejected",
+        ])
+        XCTAssertEqual(workspace.tabs.count, 2)
+    }
+
+    func testTabsHistoryAndUnavailableBackAreDeterministic() throws {
+        let vault = try makeVault([
+            "Source.md": "# Source\n\n[[Target|same]]\n",
+            "Target.md": "# Target\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let logger = RecordingLogger()
+        let workspace = VaultWorkspace(logger: logger, preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        try workspace.openVault(at: vault)
+        try workspace.openNote(at: "Source.md")
+
+        try workspace.goBack()
+        XCTAssertEqual(logger.eventNames, ["note.opened"])
+
+        let identifier = try XCTUnwrap(linkIdentifier(in: workspace.activeText))
+        try workspace.followWikiLink(identifier)
+        XCTAssertEqual(workspace.activePath, "Target.md")
+        XCTAssertEqual(workspace.tabs.count, 1)
+
+        try workspace.goBack()
+        XCTAssertEqual(workspace.activePath, "Source.md")
+        try workspace.goForward()
+        XCTAssertEqual(workspace.activePath, "Target.md")
+        try workspace.openNote(at: "Source.md")
+        try workspace.openNote(at: "Target.md")
+        XCTAssertEqual(workspace.tabs.count, 2)
+        try workspace.openNote(at: "Target.md")
+        XCTAssertEqual(workspace.tabs.count, 2)
+
+        workspace.closeTab(id: workspace.activeTabID!)
+        workspace.closeTab(id: workspace.activeTabID!)
+        XCTAssertNil(workspace.activeTabID)
+        XCTAssertEqual(logger.eventNames.filter { $0 == "tab.closed" }.count, 2)
+        XCTAssertEqual(logger.eventNames.filter { $0 == "history.back" }.count, 1)
+        XCTAssertEqual(logger.eventNames.filter { $0 == "history.forward" }.count, 1)
+    }
+
+    func testEditingDoesNotReindexAndSaveRefreshesDerivedState() throws {
+        let source = """
+        ---
+        mood: calm
+        owner: om
+        ---
+        # Source
+
+        hello [[Target|a|b]]
+        """
+        let vault = try makeVault([
+            "Source.md": source,
+            "Target.md": "# Target\n",
+            "Referrer.md": "# Referrer\n\n[[Source]]\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let logger = RecordingLogger()
+        let workspace = VaultWorkspace(logger: logger, preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        try workspace.openVault(at: vault)
+        try workspace.openNote(at: "Source.md")
+        let revision = workspace.indexRevision
+
+        XCTAssertTrue(workspace.activeText.contains("[[a∣b|om-v1:"))
+        XCTAssertEqual(workspace.properties.map(\.name), ["mood", "owner"])
+        XCTAssertEqual(workspace.backlinks, ["Referrer.md"])
+
+        try workspace.updateActiveText(workspace.activeText + "\nnew words")
+        XCTAssertEqual(workspace.indexRevision, revision)
+        try workspace.saveActiveNote()
+
+        XCTAssertEqual(workspace.indexRevision, revision + 1)
+        XCTAssertEqual(
+            try String(contentsOf: vault.appendingPathComponent("Source.md"), encoding: .utf8),
+            source + "\nnew words"
+        )
+        XCTAssertGreaterThan(workspace.status.words, 2)
+        XCTAssertEqual(workspace.status.properties, 2)
+        XCTAssertEqual(logger.eventNames.last, "note.saved")
+
+        try workspace.performSearch("new words")
+        XCTAssertEqual(workspace.searchResults.map(\.path), ["Source.md"])
+        XCTAssertEqual(logger.eventNames.last, "search.performed")
+
+        let externalFolder = vault.appendingPathComponent("External", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalFolder, withIntermediateDirectories: true)
+        try workspace.refreshForExternalChanges()
+        XCTAssertEqual(workspace.indexRevision, revision + 2)
+        XCTAssertTrue(workspace.tree.contains { $0.path == "External" })
+    }
+
+    func testMarkupAdapterPreservesAliasesAndDistinctDestinations() throws {
+        let source = "[[First|same]] [[Second|same]] [[Target|a|b]]"
+        let encoded = EditorMarkupAdapter.encode(source)
+        XCTAssertEqual(EditorMarkupAdapter.decode(encoded), source)
+        XCTAssertTrue(encoded.contains("[[a∣b|om-v1:"))
+
+        let identifiers = try NSRegularExpression(pattern: #"\|((?:om-v1:)[^\]]+)\]\]"#)
+            .matches(
+                in: encoded,
+                range: NSRange(location: 0, length: (encoded as NSString).length)
+            )
+            .map { (encoded as NSString).substring(with: $0.range(at: 1)) }
+        XCTAssertEqual(Set(identifiers.map(EditorMarkupAdapter.destination(from:))), ["First", "Second", "Target"])
+    }
+
+    func testRenderFailureIsLoggedAndWorkspaceRemainsEditable() throws {
+        let vault = try makeVault(["Note.md": "# Note\n"])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let logger = RecordingLogger()
+        let workspace = VaultWorkspace(logger: logger, preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        try workspace.openVault(at: vault)
+        try workspace.openNote(at: "Note.md")
+
+        workspace.reportRenderFailure(
+            exception: "NSRangeException",
+            reason: "selection outside text storage",
+            stack: ["MarkdownEngine.updateCodeBlockSelection"]
+        )
+        try workspace.updateActiveText("# Still editing\n")
+
+        XCTAssertEqual(logger.eventNames.last, "render.failed")
+        XCTAssertEqual(workspace.activeText, "# Still editing\n")
+        XCTAssertEqual(workspace.errorMessage, "selection outside text storage")
+    }
+
+    private func temporaryVault() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    private func makeVault(_ files: [String: String]) throws -> URL {
+        let vault = temporaryVault()
+        try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        for (path, contents) in files {
+            let url = vault.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try contents.write(to: url, atomically: true, encoding: .utf8)
+        }
+        return vault
+    }
+
+    private func linkIdentifier(in text: String) -> String? {
+        let expression = try! NSRegularExpression(pattern: #"\|((?:om-v1:)[^\]]+)\]\]"#)
+        let value = text as NSString
+        guard let match = expression.firstMatch(
+            in: text, range: NSRange(location: 0, length: value.length)
+        ) else { return nil }
+        return value.substring(with: match.range(at: 1))
+    }
+
+    private func defaultsSuiteName(_ defaults: UserDefaults) -> String {
+        defaults.volatileDomainNames.first ?? ""
+    }
+}
+
+final class RecordingLogger: EventRecording, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var events: [(LogLevel, String, [String: JSONValue])] = []
+    var eventNames: [String] { events.map(\.1) }
+
+    func record(level: LogLevel, event: String, fields: [String: JSONValue]) {
+        lock.lock()
+        events.append((level, event, fields))
+        lock.unlock()
+    }
+}

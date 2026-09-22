@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "OmVault", targets: ["OmVault"]),
+        .library(name: "OmShell", targets: ["OmShell"]),
         .executable(name: "om", targets: ["om"]),
         .executable(name: "OmEditor", targets: ["OmEditor"]),
     ],
@@ -16,12 +17,24 @@ let package = Package(
         ),
     ],
     targets: [
+        .target(
+            name: "OmCrashSupport",
+            publicHeadersPath: "include"
+        ),
+        .target(
+            name: "OmRenderSupport",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedFramework("AppKit")]
+        ),
         .target(name: "OmVault"),
-        .executableTarget(name: "om", dependencies: ["OmVault"]),
+        .target(name: "OmShell", dependencies: ["OmVault", "OmCrashSupport"]),
+        .executableTarget(name: "om", dependencies: ["OmVault", "OmShell"]),
         .executableTarget(
             name: "OmEditor",
             dependencies: [
                 "OmVault",
+                "OmShell",
+                "OmRenderSupport",
                 .product(name: "MarkdownEngine", package: "swift-markdown-engine"),
             ]
         ),
@@ -31,5 +44,6 @@ let package = Package(
             exclude: ["Resources"]
         ),
         .testTarget(name: "OmEditorTests", dependencies: ["OmEditor"]),
+        .testTarget(name: "OmShellTests", dependencies: ["OmShell"]),
     ]
 )
