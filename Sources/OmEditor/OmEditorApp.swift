@@ -44,6 +44,16 @@ struct OmEditorApp: App {
     }
 }
 
+/// The engine searches its own displayed text and answers with a count, which
+/// is why the host does not compute ranges itself: displayed text is shorter
+/// than the source wherever a wiki link is rendered, and host-computed ranges
+/// would highlight the wrong characters.
+private enum FindBus {
+    static let query = Notification.Name("om.find.query")
+    static let results = Notification.Name("om.find.results")
+    static let clear = Notification.Name("om.find.clear")
+}
+
 private struct VaultEditorView: View {
     @StateObject private var model = VaultEditorModel()
     @State private var searchQuery = ""
@@ -54,6 +64,12 @@ private struct VaultEditorView: View {
     @State private var renameName = ""
     @State private var deletePath: String?
     @FocusState private var searchFocused: Bool
+    @State private var noteQuery = ""
+    @State private var noteMatchIndex = 0
+    @State private var noteMatchCount = 0
+    @State private var showingFind = false
+    @FocusState private var findFocused: Bool
+    @State private var pendingFind: String?
 
     var body: some View {
         NavigationSplitView {
@@ -106,6 +122,20 @@ private struct VaultEditorView: View {
             Button("Cancel", role: .cancel) { deletePath = nil }
         } message: {
             Text("A folder is deleted with everything inside it. This cannot be undone.")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FindBus.results)) { note in
+            noteMatchCount = note.userInfo?["count"] as? Int ?? 0
+            if noteMatchCount == 0 { noteMatchIndex = 0 }
+        }
+        .onChange(of: model.selectedPath) { _, _ in
+            // A note opened from the global search carries the query with it:
+            // the engine can only be asked once its view exists, so the request
+            // waits here for the document to actually change.
+            guard let query = pendingFind else { return }
+            pendingFind = nil
+            noteQuery = query
+            showingFind = true
+            runFind(query, index: 0)
         }
         .onDisappear { model.flushPendingSave() }
         .task {
@@ -180,6 +210,7 @@ private struct VaultEditorView: View {
                         }
                         ForEach(Array(model.searchResults.enumerated()), id: \.offset) { _, match in
                             Button {
+                                pendingFind = searchQuery
                                 model.selectNoteFromUI(at: match.path)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -201,6 +232,7 @@ private struct VaultEditorView: View {
         VStack(spacing: 0) {
             tabStrip
             Divider()
+            if showingFind { findBar; Divider() }
             editor
             Divider()
             statusBar
@@ -237,6 +269,59 @@ private struct VaultEditorView: View {
         .frame(height: 40)
     }
 
+    private var findBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "text.magnifyingglass").foregroundStyle(.secondary)
+            TextField("Find in note", text: $noteQuery)
+                .textFieldStyle(.plain)
+                .focused($findFocused)
+                .onSubmit { stepFind(by: 1) }
+                .onChange(of: noteQuery) { _, query in runFind(query, index: 0) }
+            Text(noteMatchCount == 0 ? (noteQuery.isEmpty ? "" : "none")
+                 : "\(noteMatchIndex + 1) of \(noteMatchCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Button { stepFind(by: -1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.plain).disabled(noteMatchCount == 0)
+            Button { stepFind(by: 1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.plain)
+                .keyboardShortcut("g", modifiers: .command)
+                .disabled(noteMatchCount == 0)
+            Button { closeFind() } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .keyboardShortcut(.escape, modifiers: [])
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func runFind(_ query: String, index: Int) {
+        guard !query.isEmpty else {
+            noteMatchCount = 0
+            NotificationCenter.default.post(name: FindBus.clear, object: nil)
+            return
+        }
+        noteMatchIndex = index
+        NotificationCenter.default.post(
+            name: FindBus.query, object: nil,
+            userInfo: ["query": query, "currentIndex": index]
+        )
+    }
+
+    private func stepFind(by delta: Int) {
+        guard noteMatchCount > 0 else { return }
+        let next = (noteMatchIndex + delta + noteMatchCount) % noteMatchCount
+        runFind(noteQuery, index: next)
+    }
+
+    private func closeFind() {
+        showingFind = false
+        noteQuery = ""
+        noteMatchCount = 0
+        NotificationCenter.default.post(name: FindBus.clear, object: nil)
+    }
+
     @ViewBuilder
     private var editor: some View {
         if let selectedPath = model.selectedPath {
@@ -250,6 +335,11 @@ private struct VaultEditorView: View {
                         services: MarkdownEditorServices(
                             wikiLinks: VaultWikiLinkResolver(
                                 resolvedIdentifiers: model.editorResolvedLinkIdentifiers
+                            ),
+                            bus: MarkdownEditorBus(
+                                findClearHighlights: FindBus.clear,
+                                findQuery: FindBus.query,
+                                findResults: FindBus.results
                             )
                         )
                     )
@@ -313,8 +403,14 @@ private struct VaultEditorView: View {
                 sortButton("Modified ↑", field: .modified, direction: .ascending)
                 sortButton("Modified ↓", field: .modified, direction: .descending)
             }
-            Button("Find", systemImage: "magnifyingglass") { searchFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
+            Button("Find in Note", systemImage: "text.magnifyingglass") {
+                showingFind = true
+                findFocused = true
+            }
+            .keyboardShortcut("f", modifiers: .command)
+            .disabled(model.selectedPath == nil)
+            Button("Search Vault", systemImage: "magnifyingglass") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(model.vaultURL == nil)
             Button("Save", systemImage: "square.and.arrow.down") { model.saveFromUI() }
                 .keyboardShortcut("s", modifiers: .command)
