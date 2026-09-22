@@ -7,6 +7,7 @@ import SwiftUI
 final class VaultEditorModel: ObservableObject {
     let workspace: VaultWorkspace
     @Published private var adapterError: String?
+    private var autosave: Task<Void, Never>?
 
     init(workspace: VaultWorkspace? = nil) {
         self.workspace = workspace ?? VaultWorkspace(linkInspector: VaultLinkInspector())
@@ -58,13 +59,36 @@ final class VaultEditorModel: ObservableObject {
     func restoreLastSessionFromUI() { changed { _ = workspace.restoreLastSession() } }
     func selectNoteFromUI(at path: String?) {
         guard let path else { return }
+        flushPendingSave()
         captureError { try workspace.openNote(at: path) }
     }
     func openInNewTabFromUI(at path: String) {
         captureError { try workspace.openNoteInNewTab(at: path) }
     }
     func deleteItemFromUI(at path: String) { captureError { try workspace.deleteItem(at: path) } }
-    func updateEditorTextFromUI(_ text: String) { captureError { try workspace.updateActiveText(text) } }
+    /// Typing changes the buffer and schedules a write. Without this the only
+    /// way to keep an edit was to remember ⌘S, and closing the window lost it.
+    func updateEditorTextFromUI(_ text: String) {
+        captureError { try workspace.updateActiveText(text) }
+        scheduleAutosave()
+    }
+
+    private func scheduleAutosave() {
+        autosave?.cancel()
+        autosave = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled, let self else { return }
+            self.saveFromUI()
+        }
+    }
+
+    /// Writes anything still pending, for the moments a timer would miss:
+    /// switching notes, closing a tab, quitting.
+    func flushPendingSave() {
+        autosave?.cancel()
+        autosave = nil
+        if workspace.activeTab?.isDirty == true { saveFromUI() }
+    }
     func followWikiLinkFromUI(_ identifier: String) { captureError { try workspace.followWikiLink(identifier) } }
     func saveFromUI() { captureError { try workspace.saveActiveNote() } }
     func createNoteFromUI() { captureError { try workspace.createNote() } }
@@ -72,8 +96,14 @@ final class VaultEditorModel: ObservableObject {
     func renameNoteFromUI(at path: String, to name: String) {
         captureError { try workspace.renameNote(at: path, to: name) }
     }
-    func activateTabFromUI(_ id: UUID) { changed { workspace.activateTab(id: id) } }
-    func closeTabFromUI(_ id: UUID) { changed { workspace.closeTab(id: id) } }
+    func activateTabFromUI(_ id: UUID) {
+        flushPendingSave()
+        changed { workspace.activateTab(id: id) }
+    }
+    func closeTabFromUI(_ id: UUID) {
+        flushPendingSave()
+        changed { workspace.closeTab(id: id) }
+    }
     func goBackFromUI() { captureError { try workspace.goBack() } }
     func goForwardFromUI() { captureError { try workspace.goForward() } }
     func searchFromUI(_ query: String) { captureError { try workspace.performSearch(query) } }

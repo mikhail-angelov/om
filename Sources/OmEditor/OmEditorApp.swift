@@ -53,6 +53,7 @@ private struct VaultEditorView: View {
     @State private var renamePath = ""
     @State private var renameName = ""
     @State private var deletePath: String?
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         NavigationSplitView {
@@ -106,6 +107,7 @@ private struct VaultEditorView: View {
         } message: {
             Text("A folder is deleted with everything inside it. This cannot be undone.")
         }
+        .onDisappear { model.flushPendingSave() }
         .task {
             // The vault and the tabs the last session left open. Without this
             // every launch started at the empty state, whatever was open before.
@@ -130,28 +132,50 @@ private struct VaultEditorView: View {
                 Button("Open Vault…") { chooseVault() }
             }
         } else {
-            List {
-                TreeRows(
-                    items: model.tree,
-                    model: model,
-                    rename: beginRename,
-                    confirmDelete: beginDelete
-                )
-                Section("Search") {
-                    TextField("Search notes", text: $searchQuery)
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search all notes", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
                         .onSubmit { model.searchFromUI(searchQuery) }
-                    ForEach(Array(model.searchResults.enumerated()), id: \.offset) { _, match in
+                    if !searchQuery.isEmpty {
                         Button {
-                            model.selectNoteFromUI(at: match.path)
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(match.text).lineLimit(1)
-                                Text("\(match.path):\(match.line)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            searchQuery = ""
+                            model.searchFromUI("")
+                        } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                Divider()
+                List {
+                    if searchQuery.isEmpty {
+                        TreeRows(
+                            items: model.tree,
+                            model: model,
+                            rename: beginRename,
+                            confirmDelete: beginDelete
+                        )
+                    } else if model.searchResults.isEmpty {
+                        Text("No matches").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(model.searchResults.enumerated()), id: \.offset) { _, match in
+                            Button {
+                                model.selectNoteFromUI(at: match.path)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(match.text).lineLimit(1)
+                                    Text("\(match.path):\(match.line)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -161,8 +185,6 @@ private struct VaultEditorView: View {
     private var editorColumn: some View {
         VStack(spacing: 0) {
             tabStrip
-            Divider()
-            propertiesTable
             Divider()
             editor
             Divider()
@@ -201,31 +223,6 @@ private struct VaultEditorView: View {
     }
 
     @ViewBuilder
-    private var propertiesTable: some View {
-        if model.selectedPath != nil {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Properties")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
-                    if model.properties.isEmpty {
-                        GridRow { Text("No properties").foregroundStyle(.tertiary) }
-                    } else {
-                        ForEach(model.properties) { property in
-                            GridRow {
-                                Text(property.name).foregroundStyle(.secondary)
-                                Text(property.value)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-        }
-    }
-
-    @ViewBuilder
     private var editor: some View {
         if let selectedPath = model.selectedPath {
             NativeTextViewWrapper(
@@ -233,13 +230,26 @@ private struct VaultEditorView: View {
                     get: { model.editorText },
                     set: { model.updateEditorTextFromUI($0) }
                 ),
-                configuration: MarkdownEditorConfiguration(
-                    services: MarkdownEditorServices(
-                        wikiLinks: VaultWikiLinkResolver(
-                            resolvedIdentifiers: model.editorResolvedLinkIdentifiers
+                configuration: {
+                    var configuration = MarkdownEditorConfiguration(
+                        services: MarkdownEditorServices(
+                            wikiLinks: VaultWikiLinkResolver(
+                                resolvedIdentifiers: model.editorResolvedLinkIdentifiers
+                            )
                         )
                     )
-                ),
+                    // Text ran flush against the window edge.
+                    configuration.textInsets = TextInsets(horizontal: 20, vertical: 14)
+                    // Autocorrect capitalised the first letter of a new word
+                    // the moment Return was pressed, which is wrong in a
+                    // Markdown note and impossible to undo without noticing.
+                    configuration.spellChecking = SpellCheckingPolicy(
+                        continuousSpellChecking: true,
+                        grammarChecking: false,
+                        automaticSpellingCorrection: false
+                    )
+                    return configuration
+                }(),
                 documentId: selectedPath,
                 onLinkClick: model.followWikiLinkFromUI
             )
@@ -288,6 +298,9 @@ private struct VaultEditorView: View {
                 sortButton("Modified ↑", field: .modified, direction: .ascending)
                 sortButton("Modified ↓", field: .modified, direction: .descending)
             }
+            Button("Find", systemImage: "magnifyingglass") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(model.vaultURL == nil)
             Button("Save", systemImage: "square.and.arrow.down") { model.saveFromUI() }
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(model.selectedPath == nil)
