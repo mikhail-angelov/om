@@ -161,6 +161,10 @@ public final class VaultWorkspace {
         return result
     }
 
+    /// Not scoped to a vault: it is what tells the next launch which vault to
+    /// reopen at all.
+    private static let lastVaultKey = "om.lastVault"
+
     private let logger: any EventRecording
     private let preferences: UserDefaults
     private let linkInspector: VaultLinkInspector
@@ -188,6 +192,27 @@ public final class VaultWorkspace {
         try rebuildIndex()
         clearActiveDetails()
         errorMessage = nil
+        preferences.set(vaultURL?.path, forKey: Self.lastVaultKey)
+        restoreTabs()
+        logger.record(level: .info, event: "vault.opened", fields: [
+            "path": .string(vaultURL?.path ?? ""),
+        ])
+    }
+
+    /// Reopens the vault and the tabs the last session left behind. Returns
+    /// false when there is nothing to restore, so a first run still shows the
+    /// empty state instead of an error.
+    @discardableResult
+    public func restoreLastSession() -> Bool {
+        guard let path = preferences.string(forKey: Self.lastVaultKey) else { return false }
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        do {
+            try openVault(at: url)
+            return true
+        } catch {
+            return false
+        }
     }
 
     public func setFolderExpanded(_ path: String, expanded: Bool) {
@@ -205,7 +230,15 @@ public final class VaultWorkspace {
         savePreferences()
     }
 
+    /// Opens a note in the active tab, recording the move in that tab's
+    /// history. Opening always used to create a tab, which left every history
+    /// one entry long and both arrows permanently grey.
     public func openNote(at path: String) throws {
+        try openNote(at: path, logEvent: true, addToHistory: true)
+    }
+
+    /// Opens a note in a tab of its own, leaving the active tab alone.
+    public func openNoteInNewTab(at path: String) throws {
         try openNote(at: path, logEvent: true, addToHistory: false)
     }
 
@@ -291,7 +324,43 @@ public final class VaultWorkspace {
         }
     }
 
+    /// Deletes a note or a folder and closes whatever tabs it held. Links
+    /// pointing at a deleted note are left alone: they simply become broken,
+    /// which `om links` already reports.
+    public func deleteItem(at path: String) throws {
+        do {
+            let root = try requireVault()
+            let target = root.appendingPathComponent(path)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) else {
+                throw VaultWorkspaceError.unknownNote(path)
+            }
+            let folder = isDirectory.boolValue
+            try FileManager.default.removeItem(at: target)
+            let prefix = path + "/"
+            for tab in tabs where tab.path == path || tab.path.hasPrefix(prefix) {
+                closeTab(id: tab.id)
+            }
+            if selectedFolderPath == path || selectedFolderPath.hasPrefix(prefix) {
+                selectedFolderPath = ""
+            }
+            expandedFolders = expandedFolders.filter { $0 != path && !$0.hasPrefix(prefix) }
+            try rebuildIndex()
+            refreshActiveDetails()
+            savePreferences()
+            logger.record(
+                level: .info,
+                event: folder ? "folder.deleted" : "note.deleted",
+                fields: ["path": .string(path)]
+            )
+        } catch {
+            reject(error)
+            throw error
+        }
+    }
+
     public func closeTab(id: UUID) {
+        defer { savePreferences() }
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let wasActive = activeTabID == id
         let path = tabs[index].path
@@ -304,6 +373,7 @@ public final class VaultWorkspace {
     }
 
     public func activateTab(id: UUID) {
+        defer { savePreferences() }
         guard tabs.contains(where: { $0.id == id }) else { return }
         activeTabID = id
         refreshActiveDetails()
@@ -418,7 +488,7 @@ public final class VaultWorkspace {
             let note = notes.first { $0.path == path }!
             let source = try readSource(at: path)
             let tab = VaultTab(
-                id: UUID(), path: path, title: note.title,
+                id: UUID(), path: path, title: displayName(for: path),
                 text: EditorMarkupAdapter.encode(source), isDirty: false,
                 history: [path], historyIndex: 0
             )
@@ -426,6 +496,7 @@ public final class VaultWorkspace {
             activeTabID = tab.id
         }
         refreshActiveDetails()
+        savePreferences()
         if logEvent {
             logger.record(level: .info, event: "note.opened", fields: ["path": .string(path)])
         }
@@ -459,10 +530,17 @@ public final class VaultWorkspace {
     private func load(path: String, into index: Int) throws {
         let note = notes.first { $0.path == path }
         tabs[index].path = path
-        tabs[index].title = note?.title ?? (path as NSString).deletingPathExtension
+        _ = note
+        tabs[index].title = displayName(for: path)
         tabs[index].text = EditorMarkupAdapter.encode(try readSource(at: path))
         tabs[index].isDirty = false
         refreshActiveDetails()
+    }
+
+    /// The name shown for a note: its file name, never its first heading.
+    /// The two diverge the moment a note is renamed.
+    private func displayName(for path: String) -> String {
+        ((path as NSString).lastPathComponent as NSString).deletingPathExtension
     }
 
     private func readSource(at path: String) throws -> String {
@@ -507,9 +585,12 @@ public final class VaultWorkspace {
                 )
             }
             guard values.isRegularFile == true, child.pathExtension.lowercased() == "md" else { return nil }
+            // The file name, not the note's first heading. Renaming a note
+            // changes the file and leaves the heading alone, so a tree showing
+            // the heading looked as though the rename had not happened.
             return VaultTreeItem(
                 kind: .note, path: path,
-                title: titles[path] ?? child.deletingPathExtension().lastPathComponent,
+                title: child.deletingPathExtension().lastPathComponent,
                 modifiedAt: modified
             )
         }
@@ -538,9 +619,7 @@ public final class VaultWorkspace {
 
     private func refreshTabTitles() {
         for index in tabs.indices {
-            if let note = notes.first(where: { $0.path == tabs[index].path }) {
-                tabs[index].title = note.title
-            }
+            tabs[index].title = displayName(for: tabs[index].path)
         }
     }
 
@@ -632,6 +711,24 @@ public final class VaultWorkspace {
         preferences.set(expandedFolders.sorted(), forKey: prefix + ".expanded")
         preferences.set(sortOrder.field.rawValue, forKey: prefix + ".sort.field")
         preferences.set(sortOrder.direction.rawValue, forKey: prefix + ".sort.direction")
+        preferences.set(tabs.map(\.path), forKey: prefix + ".tabs")
+        preferences.set(activeTab?.path, forKey: prefix + ".tabs.active")
+    }
+
+    /// Reopens the tabs the previous session left, dropping any whose note is
+    /// gone. A vault edited elsewhere between sessions must not produce an
+    /// error on launch.
+    private func restoreTabs() {
+        guard let prefix = preferencePrefix() else { return }
+        let saved = preferences.stringArray(forKey: prefix + ".tabs") ?? []
+        let active = preferences.string(forKey: prefix + ".tabs.active")
+        for path in saved where notes.contains(where: { $0.path == path }) {
+            try? openNote(at: path, logEvent: false, addToHistory: false)
+        }
+        if let active, let tab = tabs.first(where: { $0.path == active }) {
+            activeTabID = tab.id
+        }
+        refreshActiveDetails()
     }
 
     private func signature(for root: URL) throws -> String {

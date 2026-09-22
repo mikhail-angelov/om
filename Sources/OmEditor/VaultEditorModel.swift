@@ -55,10 +55,15 @@ final class VaultEditorModel: ObservableObject {
     }
 
     func openVaultFromUI(at url: URL) { captureError { try workspace.openVault(at: url) } }
+    func restoreLastSessionFromUI() { changed { _ = workspace.restoreLastSession() } }
     func selectNoteFromUI(at path: String?) {
         guard let path else { return }
         captureError { try workspace.openNote(at: path) }
     }
+    func openInNewTabFromUI(at path: String) {
+        captureError { try workspace.openNoteInNewTab(at: path) }
+    }
+    func deleteItemFromUI(at path: String) { captureError { try workspace.deleteItem(at: path) } }
     func updateEditorTextFromUI(_ text: String) { captureError { try workspace.updateActiveText(text) } }
     func followWikiLinkFromUI(_ identifier: String) { captureError { try workspace.followWikiLink(identifier) } }
     func saveFromUI() { captureError { try workspace.saveActiveNote() } }

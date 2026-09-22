@@ -52,15 +52,14 @@ private struct VaultEditorView: View {
     @State private var showingRename = false
     @State private var renamePath = ""
     @State private var renameName = ""
+    @State private var deletePath: String?
 
     var body: some View {
         NavigationSplitView {
             sidebar
                 .navigationTitle(model.vaultURL?.lastPathComponent ?? "Vault")
-        } content: {
-            editorColumn
         } detail: {
-            inspector
+            editorColumn
         }
         .toolbar { toolbar }
         .alert(
@@ -94,6 +93,24 @@ private struct VaultEditorView: View {
                 showingRename = false
             }
         }
+        .confirmationDialog(
+            "Delete “\(deletePath.map { ($0 as NSString).lastPathComponent } ?? "")”?",
+            isPresented: Binding(get: { deletePath != nil }, set: { if !$0 { deletePath = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let deletePath { model.deleteItemFromUI(at: deletePath) }
+                deletePath = nil
+            }
+            Button("Cancel", role: .cancel) { deletePath = nil }
+        } message: {
+            Text("A folder is deleted with everything inside it. This cannot be undone.")
+        }
+        .task {
+            // The vault and the tabs the last session left open. Without this
+            // every launch started at the empty state, whatever was open before.
+            if model.vaultURL == nil { model.restoreLastSessionFromUI() }
+        }
         .task(id: model.vaultURL) {
             while !Task.isCancelled, model.vaultURL != nil {
                 try? await Task.sleep(for: .seconds(1))
@@ -117,7 +134,8 @@ private struct VaultEditorView: View {
                 TreeRows(
                     items: model.tree,
                     model: model,
-                    rename: beginRename
+                    rename: beginRename,
+                    confirmDelete: beginDelete
                 )
                 Section("Search") {
                     TextField("Search notes", text: $searchQuery)
@@ -249,18 +267,6 @@ private struct VaultEditorView: View {
         .frame(height: 28)
     }
 
-    private var inspector: some View {
-        List {
-            Section("Backlinks") {
-                ForEach(model.backlinks, id: \.self) { path in
-                    Button(path) { model.selectNoteFromUI(at: path) }
-                        .buttonStyle(.plain)
-                }
-            }
-        }
-        .navigationTitle("Details")
-    }
-
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
@@ -298,6 +304,10 @@ private struct VaultEditorView: View {
         }
     }
 
+    private func beginDelete(_ path: String) {
+        deletePath = path
+    }
+
     private func beginRename(path: String, title: String) {
         renamePath = path
         renameName = (path as NSString).lastPathComponent
@@ -321,6 +331,7 @@ private struct TreeRows: View {
     let items: [VaultTreeItem]
     @ObservedObject var model: VaultEditorModel
     let rename: (String, String) -> Void
+    let confirmDelete: (String) -> Void
 
     var body: some View {
         ForEach(items) { item in
@@ -331,10 +342,13 @@ private struct TreeRows: View {
                         set: { model.setFolderExpandedFromUI(item.path, expanded: $0) }
                     )
                 ) {
-                    TreeRows(items: item.children, model: model, rename: rename)
+                    TreeRows(items: item.children, model: model, rename: rename, confirmDelete: confirmDelete)
                 } label: {
                     Label(item.title, systemImage: "folder")
                         .onTapGesture { model.selectFolderFromUI(item.path) }
+                        .contextMenu {
+                            Button("Delete", role: .destructive) { confirmDelete(item.path) }
+                        }
                 }
             } else {
                 Button {
@@ -344,7 +358,10 @@ private struct TreeRows: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
+                    Button("Open in New Tab") { model.openInNewTabFromUI(at: item.path) }
                     Button("Rename…") { rename(item.path, item.title) }
+                    Divider()
+                    Button("Delete", role: .destructive) { confirmDelete(item.path) }
                 }
             }
         }

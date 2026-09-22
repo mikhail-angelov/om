@@ -24,7 +24,9 @@ final class VaultWorkspaceTests: XCTestCase {
         try workspace.openVault(at: vault)
 
         XCTAssertEqual(workspace.tree.map(\.path), ["Folder"])
-        XCTAssertEqual(workspace.tree[0].children.map(\.title), ["Deep", "Zulu Title"])
+        // The file name, not the heading: renaming a note must change what the
+        // tree shows, and the heading inside it does not move.
+        XCTAssertEqual(workspace.tree[0].children.map(\.title), ["Deep", "Z"])
 
         workspace.setFolderExpanded("Folder", expanded: true)
         workspace.setSortOrder(VaultSortOrder(field: .name, direction: .descending))
@@ -58,10 +60,42 @@ final class VaultWorkspaceTests: XCTestCase {
 
         XCTAssertThrowsError(try workspace.createFolder(named: "Ideas", in: ""))
         XCTAssertEqual(logger.eventNames, [
+            "vault.opened",
             "folder.created", "note.created", "note.created", "note.renamed",
             "operation.rejected", "operation.rejected",
         ])
         XCTAssertEqual(workspace.tabs.count, 2)
+    }
+
+    func testDeletingClosesTabsAndRestoringReopensTheLastSession() throws {
+        let vault = try makeVault([
+            "Keep.md": "# Keep\n",
+            "Drop/Gone.md": "# Gone\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuiteName(defaults)) }
+        let logger = RecordingLogger()
+        let workspace = VaultWorkspace(logger: logger, preferences: defaults)
+        try workspace.openVault(at: vault)
+        try workspace.openNote(at: "Keep.md")
+        try workspace.openNoteInNewTab(at: "Drop/Gone.md")
+        XCTAssertEqual(workspace.tabs.count, 2)
+
+        // Deleting a folder takes its notes and their tabs with it.
+        try workspace.deleteItem(at: "Drop")
+        XCTAssertEqual(workspace.tabs.map(\.path), ["Keep.md"])
+        XCTAssertFalse(workspace.notes.contains { $0.path == "Drop/Gone.md" })
+        XCTAssertTrue(logger.eventNames.contains("folder.deleted"))
+        XCTAssertThrowsError(try workspace.deleteItem(at: "Drop"))
+
+        // A fresh workspace over the same preferences comes back where the
+        // last one stopped, without being told which vault to open.
+        let next = VaultWorkspace(logger: RecordingLogger(), preferences: defaults)
+        XCTAssertTrue(next.restoreLastSession())
+        XCTAssertEqual(next.vaultURL?.standardizedFileURL, vault.standardizedFileURL)
+        XCTAssertEqual(next.tabs.map(\.path), ["Keep.md"])
+        XCTAssertEqual(next.activePath, "Keep.md")
     }
 
     func testTabsHistoryAndUnavailableBackAreDeterministic() throws {
@@ -76,7 +110,7 @@ final class VaultWorkspaceTests: XCTestCase {
         try workspace.openNote(at: "Source.md")
 
         try workspace.goBack()
-        XCTAssertEqual(logger.eventNames, ["note.opened"])
+        XCTAssertEqual(logger.eventNames, ["vault.opened", "note.opened"])
 
         let identifier = try XCTUnwrap(linkIdentifier(in: workspace.activeText))
         try workspace.followWikiLink(identifier)
@@ -87,8 +121,12 @@ final class VaultWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.activePath, "Source.md")
         try workspace.goForward()
         XCTAssertEqual(workspace.activePath, "Target.md")
+        // Opening from the tree reuses the active tab and records the move, so
+        // the back arrow has somewhere to go. A second tab is asked for.
         try workspace.openNote(at: "Source.md")
-        try workspace.openNote(at: "Target.md")
+        XCTAssertEqual(workspace.tabs.count, 1)
+        XCTAssertTrue(workspace.canGoBack)
+        try workspace.openNoteInNewTab(at: "Target.md")
         XCTAssertEqual(workspace.tabs.count, 2)
         try workspace.openNote(at: "Target.md")
         XCTAssertEqual(workspace.tabs.count, 2)
