@@ -74,6 +74,8 @@ were open, between launches.
 | `⌘F` | find inside the open note, with match count and `⌘G` to step |
 | `⌘⇧F` | search every note in the vault |
 | `⌘S` | save now — edits also autosave shortly after you stop typing |
+| `⌥↑` / `⌥↓` | move the current line up or down |
+| `⌥⇧↑` / `⌥⇧↓` | duplicate the current line above or below |
 | `Esc` | close the in-note find bar |
 
 The sidebar keeps the width it was dragged to, lists folders before files in

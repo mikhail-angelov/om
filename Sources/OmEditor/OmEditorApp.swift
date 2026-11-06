@@ -42,6 +42,22 @@ struct OmEditorApp: App {
                 .frame(minWidth: 960, minHeight: 600)
         }
         .defaultSize(width: 1_180, height: 760)
+        .commands {
+            // A menu of its own: hooking these into Edit's undo/redo group is
+            // one of the SwiftUI Edit-menu customizations that silently kills
+            // the standard Undo/Redo items — ⌘Z stopped working when tried.
+            CommandMenu("Line") {
+                Button("Move Line Up") { EditorLineCommands.moveFocusedLine(up: true) }
+                    .keyboardShortcut(.upArrow, modifiers: .option)
+                Button("Move Line Down") { EditorLineCommands.moveFocusedLine(up: false) }
+                    .keyboardShortcut(.downArrow, modifiers: .option)
+                Divider()
+                Button("Duplicate Line Above") { EditorLineCommands.duplicateFocusedLine(below: false) }
+                    .keyboardShortcut(.upArrow, modifiers: [.option, .shift])
+                Button("Duplicate Line Below") { EditorLineCommands.duplicateFocusedLine(below: true) }
+                    .keyboardShortcut(.downArrow, modifiers: [.option, .shift])
+            }
+        }
     }
 }
 
