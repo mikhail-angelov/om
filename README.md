@@ -17,6 +17,16 @@ macOS 14 or later and a Swift 6 toolchain. The vault engine and the CLI have no
 dependencies beyond Foundation; the editor uses
 [swift-markdown-engine](https://github.com/nodes-app/swift-markdown-engine).
 
+## Install
+
+```sh
+brew install --cask mikhail-angelov/tap/om
+```
+
+The cask lives in the [homebrew-tap](https://github.com/mikhail-angelov/homebrew-tap)
+repository and is updated on every tagged release; if `brew` does not know the
+tap yet, `brew tap mikhail-angelov/tap` first.
+
 ## Build and install
 
 ```sh
