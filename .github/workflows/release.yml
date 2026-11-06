@@ -10,6 +10,11 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    env:
+      # Secrets cannot be read in an `if:`, so the tap step below tests this
+      # env copy instead.
+      token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      tap_repo: mikhail-angelov/homebrew-tap
     steps:
       - uses: actions/checkout@v4
       # Tests gate the release: `make release` runs them before packaging.
@@ -19,16 +24,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" build/Om-*.zip --generate-notes
       - name: Update the Homebrew tap
-        env:
-          repo: mikhail-angelov/homebrew-tap
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: env.token != ''
         run: |
           zip=$(ls build/Om-*.zip)
           sha256=$(shasum -a 256 "$zip" | awk '{print $1}')
           version="${GITHUB_REF_NAME#v}"
           url="https://github.com/mikhail-angelov/om/releases/download/$GITHUB_REF_NAME/$(basename "$zip")"
           sed -e "s/@VERSION@/$version/" -e "s/@SHA256@/$sha256/" -e "s|@URL@|$url|" scripts/cask.rb.tmpl > /tmp/om.rb
-          existing=$(curl -sS -H "Authorization: Bearer $token" "https://api.github.com/repos/$repo/contents/Casks/om.rb")
+          existing=$(curl -sS -H "Authorization: Bearer $token" "https://api.github.com/repos/$tap_repo/contents/Casks/om.rb")
           file_sha=$(printf '%s' "$existing" | jq -r '.sha // empty')
           payload=$(jq -n \
             --arg message "om $version" \
@@ -38,5 +41,5 @@ jobs:
           curl -sS -X PUT \
             -H "Authorization: Bearer $token" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$repo/contents/Casks/om.rb" \
+            "https://api.github.com/repos/$tap_repo/contents/Casks/om.rb" \
             -d "$payload"
