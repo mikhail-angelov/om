@@ -1,4 +1,5 @@
 import Foundation
+import OmVault
 import XCTest
 @testable import OmShell
 
@@ -250,6 +251,116 @@ final class VaultWorkspaceTests: XCTestCase {
         XCTAssertEqual(logger.eventNames.last, "render.failed")
         XCTAssertEqual(workspace.activeText, "# Still editing\n")
         XCTAssertEqual(workspace.errorMessage, "selection outside text storage")
+    }
+
+    /// A vault is a folder, and the folder's other files are notes too: the
+    /// tree lists them, text ones open, and bytes that are not text are
+    /// refused rather than shown as mangled characters.
+    func testTheVaultShowsEveryFileAndOpensOnlyTheTextOnes() throws {
+        let vault = try makeVault([
+            "Alpha.md": "# Alpha\n",
+            "notes.txt": "a plain list\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        try Data([0x89, 0x50, 0x4E, 0x47, 0x00]).write(
+            to: vault.appendingPathComponent("image.png")
+        )
+        try Data("# Hidden\n".utf8).write(to: vault.appendingPathComponent(".hidden.md"))
+
+        let workspace = VaultWorkspace(logger: RecordingLogger(), preferences: freshDefaults())
+        try workspace.openVault(at: vault)
+
+        XCTAssertEqual(workspace.tree.map(\.path), ["Alpha.md", "image.png", "notes.txt"])
+        // Markdown is the vault's native kind, so only its extension is
+        // dropped: `notes.txt` and a `notes.md` beside it must read apart.
+        XCTAssertEqual(workspace.tree.map(\.title), ["Alpha", "image.png", "notes.txt"])
+
+        try workspace.openNote(at: "notes.txt")
+        XCTAssertEqual(workspace.activeText, "a plain list\n")
+
+        XCTAssertThrowsError(try workspace.openNote(at: "image.png")) {
+            XCTAssertEqual($0 as? VaultWorkspaceError, .notText("image.png"))
+        }
+    }
+
+    /// One password covers the whole vault: a sealed note is unreadable until
+    /// it is entered, and locking takes it off the screen again.
+    func testSealingANoteHidesItUntilTheVaultPasswordIsEntered() throws {
+        let vault = try makeVault(["Secret.md": "# Secret\n"])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let workspace = VaultWorkspace(logger: RecordingLogger(), preferences: freshDefaults())
+        try workspace.openVault(at: vault)
+
+        XCTAssertFalse(workspace.isSecurityConfigured)
+        try workspace.openNote(at: "Secret.md")
+        try workspace.setPassword("correct horse")
+        XCTAssertTrue(workspace.isSecurityConfigured)
+        XCTAssertTrue(workspace.isUnlocked)
+
+        try workspace.encryptNote(at: "Secret.md")
+        XCTAssertEqual(workspace.tree.map(\.path), ["Secret.omenc"])
+        XCTAssertEqual(workspace.tree.map(\.title), ["Secret"])
+        // The open tab followed the note through the seal and is still editable.
+        XCTAssertEqual(workspace.activePath, "Secret.omenc")
+        try workspace.updateActiveText("# Secret\n\nSealed.\n")
+        try workspace.saveActiveNote()
+        XCTAssertNil(
+            try VaultFile.text(at: vault.appendingPathComponent("Secret.omenc")),
+            "a sealed note must not read back as text"
+        )
+
+        workspace.lock()
+        XCTAssertFalse(workspace.isUnlocked)
+        XCTAssertTrue(workspace.tabs.isEmpty, "locking must take the decrypted note off the screen")
+        XCTAssertThrowsError(try workspace.openNote(at: "Secret.omenc")) {
+            XCTAssertEqual($0 as? VaultWorkspaceError, .locked("Secret.omenc"))
+        }
+
+        XCTAssertThrowsError(try workspace.unlock(password: "wrong horse"))
+        try workspace.unlock(password: "correct horse")
+        try workspace.openNote(at: "Secret.omenc")
+        XCTAssertEqual(workspace.activeText, "# Secret\n\nSealed.\n")
+
+        try workspace.decryptNote(at: "Secret.omenc")
+        XCTAssertEqual(workspace.tree.map(\.path), ["Secret.md"])
+        XCTAssertEqual(workspace.activeText, "# Secret\n\nSealed.\n")
+    }
+
+    /// Folders lead the tree in every sort order, and the sidebar keeps the
+    /// width it was last dragged to across launches.
+    func testFoldersLeadTheTreeInEverySortOrderAndTheSidebarWidthSurvives() throws {
+        let vault = try makeVault([
+            "Apple.md": "# Apple\n",
+            "Folder/Inside.md": "# Inside\n",
+            "Zebra.md": "# Zebra\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: vault) }
+        let defaults = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsSuiteName(defaults)) }
+
+        let workspace = VaultWorkspace(logger: RecordingLogger(), preferences: defaults)
+        try workspace.openVault(at: vault)
+        XCTAssertEqual(workspace.tree.map(\.title), ["Folder", "Apple", "Zebra"])
+
+        workspace.setSortOrder(VaultSortOrder(field: .name, direction: .descending))
+        XCTAssertEqual(
+            workspace.tree.map(\.title), ["Folder", "Zebra", "Apple"],
+            "reversing the order must reverse the notes, not sink the folders"
+        )
+
+        workspace.setSortOrder(VaultSortOrder(field: .modified, direction: .descending))
+        XCTAssertEqual(workspace.tree.first?.kind, .folder)
+
+        XCTAssertEqual(workspace.sidebarWidth, 260, "a fresh vault opens at the default width")
+        workspace.setSidebarWidth(420)
+
+        let reopened = VaultWorkspace(logger: RecordingLogger(), preferences: defaults)
+        try reopened.openVault(at: vault)
+        XCTAssertEqual(reopened.sidebarWidth, 420)
+    }
+
+    private func freshDefaults() -> UserDefaults {
+        UserDefaults(suiteName: UUID().uuidString)!
     }
 
     private func temporaryVault() -> URL {

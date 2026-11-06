@@ -20,6 +20,15 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/$name"
 
+# The icon is drawn from source every build, so there is no binary asset in the
+# repository to fall out of step with scripts/icon.swift.
+if iconset=$(swift "$root/scripts/icon.swift" "$root/$out"); then
+	iconutil -c icns "$iconset" -o "$app/Contents/Resources/$name.icns"
+	rm -rf "$iconset"
+else
+	echo "icon: skipped, scripts/icon.swift did not run" >&2
+fi
+
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,6 +38,8 @@ cat >"$app/Contents/Info.plist" <<PLIST
 	<key>CFBundleDisplayName</key><string>$name</string>
 	<key>CFBundleExecutable</key><string>$name</string>
 	<key>CFBundleIdentifier</key><string>app.om.editor</string>
+	<key>CFBundleIconFile</key><string>$name</string>
+	<key>CFBundleIconName</key><string>$name</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$version</string>
 	<key>CFBundleVersion</key><string>$version</string>

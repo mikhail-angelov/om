@@ -1,11 +1,15 @@
 # om
 
-A local Markdown vault for macOS: a folder of `.md` files, a headless engine
-that understands the links between them, a command-line tool, and an editor
-with live preview.
+A local Markdown vault for macOS: a folder of files, a headless engine that
+understands the links between them, a command-line tool, and an editor with
+live preview.
 
 Nothing is synced anywhere. A vault is a directory; the notes in it are plain
-files you can edit with anything else.
+files you can edit with anything else. Every file in the folder is listed, not
+only the Markdown: a `.txt` or a `.json` opens and edits like a note, a file
+whose bytes are not text is shown but not opened, and dotfiles stay out of the
+way. `[[Links]]` address a note by its bare name or by its filename, so both
+`[[Notes]]` and `[[notes.txt]]` find it.
 
 ## Requirements
 
@@ -55,7 +59,10 @@ om log       [--tail N]              # recent entries from the event journal
 ```
 
 `om rename` edits the vault in place. Copy a fixture before experimenting with
-it.
+it. A rename keeps the file's kind: `notes.txt` becomes `<new>.txt`.
+
+Encrypted notes are opaque to the command-line tool: `om index` lists them,
+and nothing reads inside them.
 
 ## The editor
 
@@ -69,10 +76,31 @@ were open, between launches.
 | `⌘S` | save now — edits also autosave shortly after you stop typing |
 | `Esc` | close the in-note find bar |
 
+The sidebar keeps the width it was dragged to, lists folders before files in
+every sort order, and carries its own sort control beside the search field.
+
 Notes and folders are created, renamed and deleted from the sidebar's context
 menu. Renaming a note rewrites every link that pointed at it, exactly as
 `om rename` does. Following a `[[link]]` moves the window's history, which the
 back and forward arrows walk.
+
+## Encrypted notes
+
+A vault can carry one password, set from the toolbar's lock. **Encrypt…** in a
+note's context menu seals it: `Secret.md` becomes `Secret.omenc`, and the
+original file is removed. A sealed note shows with a lock in the tree, opens
+only while the vault is unlocked, and re-seals on every save. **Decrypt…**
+turns it back into the file it was, extension and all.
+
+The password is never stored. What sits beside the notes, in
+`.om/security.json`, is a random salt and a verifier: the key is derived with
+PBKDF2-HMAC-SHA256 (600,000 iterations) and notes are sealed with AES-GCM, so a
+tampered file fails to open rather than decrypting to something else. Lose the
+password and the notes are gone — there is no recovery, by design.
+
+Locking the vault drops the key and closes every tab holding a decrypted note.
+Sealed notes never appear in vault search, unlocked or not: the search reads
+files from disk, and on disk there is nothing to read.
 
 ## Diagnostics
 
@@ -95,10 +123,12 @@ om log --tail 20
 
 ```text
 Sources/OmVault/       the vault engine: index, links, backlinks, rename, search
+Sources/OmCrypto/      the vault password and the seal around an encrypted note
 Sources/OmShell/       application logic, headless — no SwiftUI, no AppKit
 Sources/OmEditor/      the SwiftUI layer, which only displays and sends intent
 Sources/om/            the command-line tool
 Sources/Om*Support/    small Objective-C bridges for the crash and render handlers
+scripts/icon.swift     the application icon, drawn in code and built at bundle time
 Fixtures/vault/        a vault carrying every link shape the renamer must survive
 ```
 

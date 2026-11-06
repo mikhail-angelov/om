@@ -120,10 +120,11 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
 
     // MARK: - Criterion 1
 
-    /// The inventory lists exactly the Markdown files — top-level and nested,
-    /// including a name with spaces — and nothing else; each `path` is relative
-    /// to the vault root and each `name` is the filename without `.md`.
-    func testIndexListsOnlyMarkdownFilesWithRelativePathsAndNames() throws {
+    /// The inventory lists every file in the vault — top-level and nested,
+    /// Markdown and not, including a name with spaces — and nothing hidden;
+    /// each `path` is relative to the vault root and each `name` is the
+    /// filename without its extension.
+    func testIndexListsEveryFileWithRelativePathsAndNames() throws {
         let notes = try indexInventory()
 
         let expectedPaths = [
@@ -131,18 +132,26 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
             "Nested/Deep.md",
             "No Heading.md",
             "README.md",
+            "image.png",
+            "notes.txt",
         ]
         let expectedNames = [
             "A Note With Spaces.md": "A Note With Spaces",
             "Nested/Deep.md": "Deep",
             "No Heading.md": "No Heading",
             "README.md": "README",
+            "image.png": "image",
+            "notes.txt": "notes",
         ]
 
         XCTAssertEqual(
             notes.map(\.path).sorted(),
             expectedPaths.sorted(),
-            "The inventory must contain exactly the Markdown files, relative to the vault root."
+            "The inventory must contain every file in the vault, relative to the vault root."
+        )
+        XCTAssertFalse(
+            notes.contains { ($0.path as NSString).lastPathComponent.hasPrefix(".") },
+            "A dotfile is the vault's own business and must never be indexed as a note"
         )
 
         for note in notes {
@@ -153,7 +162,7 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
             XCTAssertEqual(
                 note.name,
                 expectedNames[note.path],
-                "`name` must be the filename without `.md`, got \(note.name) for path \(note.path)"
+                "`name` must be the filename without its extension, got \(note.name) for path \(note.path)"
             )
         }
 
@@ -174,6 +183,10 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
         XCTAssertEqual(byPath["Nested/Deep.md"]?.title, "Deep Note")
         // "No Heading.md" has only a level-two heading, so its title is its name.
         XCTAssertEqual(byPath["No Heading.md"]?.title, "No Heading")
+        // A file with no heading to read — plain text, or bytes that are not
+        // text at all — falls back to its name the same way.
+        XCTAssertEqual(byPath["notes.txt"]?.title, "notes")
+        XCTAssertEqual(byPath["image.png"]?.title, "image")
     }
 
     // MARK: - Criterion 3
@@ -186,7 +199,7 @@ final class OmVaultIndexAcceptanceTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0, "`om index <vault>` must exit 0 on success")
 
         let notes = try parseInventory(result.stdout)
-        XCTAssertEqual(notes.count, 4, "A successful index of the fixture vault lists its four notes")
+        XCTAssertEqual(notes.count, 6, "A successful index of the fixture vault lists its six files")
     }
 
     /// An invalid vault makes `om index` exit nonzero and report the error on

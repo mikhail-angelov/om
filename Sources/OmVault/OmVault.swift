@@ -45,24 +45,27 @@ public struct VaultIndexer: Sendable {
             throw VaultIndexError.invalidVault(root.path)
         }
 
-        let files = try markdownFiles(in: root, relativeTo: "", using: fileManager)
+        let files = try vaultFiles(in: root, relativeTo: "", using: fileManager)
         let notes = try files.map { file in
             let fileURL = file.url
             let relativePath = file.path
             let name = fileURL.deletingPathExtension().lastPathComponent
-            let contents = try String(contentsOf: fileURL, encoding: .utf8)
+            // A sealed or binary file still belongs in the inventory; only its
+            // title has to fall back to the name, because there is no heading
+            // to read out of bytes that are not text.
+            let contents = try VaultFile.text(at: fileURL)
 
             return VaultNote(
                 path: relativePath,
                 name: name,
-                title: firstLevelOneHeading(in: contents) ?? name
+                title: contents.flatMap(firstLevelOneHeading(in:)) ?? name
             )
         }
 
         return VaultInventory(notes: notes.sorted { $0.path < $1.path })
     }
 
-    private func markdownFiles(
+    private func vaultFiles(
         in directory: URL,
         relativeTo relativeDirectory: String,
         using fileManager: FileManager
@@ -80,18 +83,18 @@ public struct VaultIndexer: Sendable {
             let relativePath = relativeDirectory.isEmpty
                 ? child.lastPathComponent
                 : "\(relativeDirectory)/\(child.lastPathComponent)"
-            if values.isSymbolicLink == true {
+            if values.isSymbolicLink == true || VaultFile.isHidden(child.lastPathComponent) {
                 continue
             }
             if values.isDirectory == true {
                 files.append(
-                    contentsOf: try markdownFiles(
+                    contentsOf: try vaultFiles(
                         in: child,
                         relativeTo: relativePath,
                         using: fileManager
                     )
                 )
-            } else if values.isRegularFile == true && child.pathExtension.lowercased() == "md" {
+            } else if values.isRegularFile == true {
                 files.append((url: child, path: relativePath))
             }
         }

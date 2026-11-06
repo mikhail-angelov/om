@@ -1,5 +1,6 @@
 import AppKit
 import MarkdownEngine
+import OmVault
 import OmRenderSupport
 import OmShell
 import SwiftUI
@@ -70,11 +71,25 @@ private struct VaultEditorView: View {
     @State private var showingFind = false
     @FocusState private var findFocused: Bool
     @State private var pendingFind: String?
+    @State private var passwordRequest: PasswordRequest?
+    /// The note waiting on the password sheet: sealing or opening one is what
+    /// usually sends a user to the lock in the first place.
+    @State private var pendingSeal: PendingSeal?
 
     var body: some View {
         NavigationSplitView {
             sidebar
                 .navigationTitle(model.vaultURL?.lastPathComponent ?? "Vault")
+                .navigationSplitViewColumnWidth(
+                    min: 180, ideal: model.sidebarWidth, max: 560
+                )
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.onChange(of: proxy.size.width) { _, width in
+                            model.rememberSidebarWidthFromUI(width)
+                        }
+                    }
+                )
         } detail: {
             editorColumn
         }
@@ -98,6 +113,24 @@ private struct VaultEditorView: View {
             ) {
                 model.createFolderFromUI(named: newFolderName)
                 showingNewFolder = false
+            }
+        }
+        .sheet(item: $passwordRequest) { request in
+            PasswordPrompt(
+                title: request.title,
+                message: request.message,
+                requiresConfirmation: request == .create
+            ) { password in
+                if request == .create {
+                    model.setPasswordFromUI(password)
+                } else {
+                    model.unlockFromUI(with: password)
+                }
+                passwordRequest = nil
+                completePendingSeal()
+            } cancel: {
+                passwordRequest = nil
+                pendingSeal = nil
             }
         }
         .sheet(isPresented: $showingRename) {
@@ -157,7 +190,7 @@ private struct VaultEditorView: View {
             ContentUnavailableView {
                 Label("No Vault Open", systemImage: "folder")
             } description: {
-                Text("Choose a folder containing Markdown notes.")
+                Text("Choose a folder. Om shows every file in it.")
             } actions: {
                 Button("Open Vault…") { chooseVault() }
             }
@@ -181,6 +214,7 @@ private struct VaultEditorView: View {
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
                     }
+                    sortMenu
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -191,7 +225,8 @@ private struct VaultEditorView: View {
                             items: model.tree,
                             model: model,
                             rename: beginRename,
-                            confirmDelete: beginDelete
+                            confirmDelete: beginDelete,
+                            seal: beginSeal
                         )
                     } else if model.searchResults.isEmpty, model.searchNameMatches.isEmpty {
                         Text("No matches").foregroundStyle(.secondary)
@@ -384,6 +419,10 @@ private struct VaultEditorView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        // The lock sits on its own at the leading edge. In the trailing group
+        // it was the tenth item and the first one macOS folded away into the
+        // overflow menu, which made the feature look absent.
+        ToolbarItem(placement: .navigation) { lockButton }
         ToolbarItemGroup {
             Button("Open Vault", systemImage: "folder") { chooseVault() }
             Button("Back", systemImage: "chevron.left") { model.goBackFromUI() }
@@ -397,12 +436,6 @@ private struct VaultEditorView: View {
                 showingNewFolder = true
             }
             .disabled(model.vaultURL == nil)
-            Menu("Sort", systemImage: "arrow.up.arrow.down") {
-                sortButton("Name ↑", field: .name, direction: .ascending)
-                sortButton("Name ↓", field: .name, direction: .descending)
-                sortButton("Modified ↑", field: .modified, direction: .ascending)
-                sortButton("Modified ↓", field: .modified, direction: .descending)
-            }
             Button("Find in Note", systemImage: "text.magnifyingglass") {
                 showingFind = true
                 findFocused = true
@@ -418,18 +451,93 @@ private struct VaultEditorView: View {
         }
     }
 
+    /// One control for the vault's one password: it sets it, opens it, or
+    /// closes it again, depending on where the vault stands.
+    @ViewBuilder
+    private var lockButton: some View {
+        if !model.isSecurityConfigured {
+            Button("Set Vault Password", systemImage: "key.fill") {
+                pendingSeal = nil
+                passwordRequest = .create
+            }
+            .disabled(model.vaultURL == nil)
+        } else if model.isUnlocked {
+            Button("Lock Vault", systemImage: "lock.open") { model.lockFromUI() }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+        } else {
+            Button("Unlock Vault", systemImage: "lock.fill") {
+                pendingSeal = nil
+                passwordRequest = .unlock
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+        }
+    }
+
+    /// Sorting belongs to the list it sorts, so the control sits in the
+    /// sidebar's header rather than in the window toolbar across the way.
+    private var sortMenu: some View {
+        Menu {
+            sortButton("Name ↑", field: .name, direction: .ascending)
+            sortButton("Name ↓", field: .name, direction: .descending)
+            sortButton("Modified ↑", field: .modified, direction: .ascending)
+            sortButton("Modified ↓", field: .modified, direction: .descending)
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sort the vault")
+        .disabled(model.vaultURL == nil)
+    }
+
     private func sortButton(
         _ title: String,
         field: VaultSortField,
         direction: VaultSortDirection
     ) -> some View {
-        Button(title) {
-            model.setSortOrderFromUI(VaultSortOrder(field: field, direction: direction))
+        let order = VaultSortOrder(field: field, direction: direction)
+        return Button {
+            model.setSortOrderFromUI(order)
+        } label: {
+            if model.sortOrder == order {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
         }
     }
 
     private func beginDelete(_ path: String) {
         deletePath = path
+    }
+
+    /// Sealing and unsealing both need the vault open. Whichever step is
+    /// missing — a password that was never set, or one that was not entered
+    /// this session — is asked for first, and the note follows.
+    private func beginSeal(_ seal: PendingSeal) {
+        guard model.isSecurityConfigured else {
+            pendingSeal = seal
+            passwordRequest = .create
+            return
+        }
+        guard model.isUnlocked else {
+            pendingSeal = seal
+            passwordRequest = .unlock
+            return
+        }
+        pendingSeal = seal
+        completePendingSeal()
+    }
+
+    private func completePendingSeal() {
+        guard let seal = pendingSeal, model.isUnlocked else { return }
+        pendingSeal = nil
+        switch seal.direction {
+        case .encrypt: model.encryptNoteFromUI(at: seal.path)
+        case .decrypt: model.decryptNoteFromUI(at: seal.path)
+        }
     }
 
     private func beginRename(path: String, title: String) {
@@ -451,11 +559,73 @@ private struct VaultEditorView: View {
     }
 }
 
+/// Which way a note is about to cross the vault's seal.
+private struct PendingSeal {
+    enum Direction { case encrypt, decrypt }
+    let path: String
+    let direction: Direction
+}
+
+private enum PasswordRequest: Identifiable {
+    case create
+    case unlock
+
+    var id: Int { self == .create ? 0 : 1 }
+
+    var title: String {
+        self == .create ? "Set Vault Password" : "Unlock Vault"
+    }
+
+    var message: String {
+        self == .create
+            ? "One password covers every encrypted note in this vault. It is not stored anywhere and cannot be recovered."
+            : "Enter the vault password to open its encrypted notes."
+    }
+}
+
+private struct PasswordPrompt: View {
+    let title: String
+    let message: String
+    let requiresConfirmation: Bool
+    let commit: (String) -> Void
+    let cancel: () -> Void
+    @State private var password = ""
+    @State private var confirmation = ""
+
+    private var isValid: Bool {
+        !password.isEmpty && (!requiresConfirmation || password == confirmation)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title).font(.headline)
+            Text(message).font(.caption).foregroundStyle(.secondary)
+            SecureField("Password", text: $password)
+                .onSubmit { if isValid { commit(password) } }
+            if requiresConfirmation {
+                SecureField("Repeat password", text: $confirmation)
+                    .onSubmit { if isValid { commit(password) } }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(title, action: { commit(password) })
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isValid)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+}
+
 private struct TreeRows: View {
     let items: [VaultTreeItem]
     @ObservedObject var model: VaultEditorModel
     let rename: (String, String) -> Void
     let confirmDelete: (String) -> Void
+    let seal: (PendingSeal) -> Void
 
     var body: some View {
         ForEach(items) { item in
@@ -466,7 +636,10 @@ private struct TreeRows: View {
                         set: { model.setFolderExpandedFromUI(item.path, expanded: $0) }
                     )
                 ) {
-                    TreeRows(items: item.children, model: model, rename: rename, confirmDelete: confirmDelete)
+                    TreeRows(
+                        items: item.children, model: model, rename: rename,
+                        confirmDelete: confirmDelete, seal: seal
+                    )
                 } label: {
                     Label(item.title, systemImage: "folder")
                         .onTapGesture { model.selectFolderFromUI(item.path) }
@@ -478,12 +651,20 @@ private struct TreeRows: View {
                 Button {
                     model.selectNoteFromUI(at: item.path)
                 } label: {
-                    Label(item.title, systemImage: "doc.text")
+                    Label(
+                        item.title,
+                        systemImage: model.isEncrypted(item.path) ? "lock.doc" : "doc.text"
+                    )
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
                     Button("Open in New Tab") { model.openInNewTabFromUI(at: item.path) }
                     Button("Rename…") { rename(item.path, item.title) }
+                    if model.isEncrypted(item.path) {
+                        Button("Decrypt…") { seal(PendingSeal(path: item.path, direction: .decrypt)) }
+                    } else {
+                        Button("Encrypt…") { seal(PendingSeal(path: item.path, direction: .encrypt)) }
+                    }
                     Divider()
                     Button("Delete", role: .destructive) { confirmDelete(item.path) }
                 }

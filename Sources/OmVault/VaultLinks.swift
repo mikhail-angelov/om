@@ -38,11 +38,17 @@ public struct VaultLinkInspector: Sendable {
     public func inspect(vaultAt vaultURL: URL) throws -> VaultLinksReport {
         let inventory = try VaultIndexer().index(vaultAt: vaultURL)
         let root = vaultURL.standardizedFileURL
+        // A note is addressable by its bare name and by its full filename. The
+        // second key is what makes `[[notes.txt]]` resolve now that a vault
+        // holds more than Markdown.
         let destinations = inventory.notes.reduce(into: [String: String]()) { result, note in
             let filename = (note.path as NSString).lastPathComponent
             let name = (filename as NSString).deletingPathExtension.lowercased()
             if result[name] == nil {
                 result[name] = note.path
+            }
+            if result[filename.lowercased()] == nil {
+                result[filename.lowercased()] = note.path
             }
         }
 
@@ -50,17 +56,15 @@ public struct VaultLinkInspector: Sendable {
         var broken: [VaultLink] = []
 
         for note in inventory.notes {
-            let contents = try String(
-                contentsOf: root.appendingPathComponent(note.path),
-                encoding: .utf8
-            )
+            guard let contents = try VaultFile.text(
+                at: root.appendingPathComponent(note.path)
+            ) else { continue }
 
             for parsed in parseLinks(in: contents) {
                 let filename = (parsed.target as NSString).lastPathComponent
-                let lookupName = (filename as NSString).pathExtension.lowercased() == "md"
-                    ? (filename as NSString).deletingPathExtension
-                    : filename
-                let resolved = destinations[lookupName.lowercased()]
+                let bareName = (filename as NSString).deletingPathExtension
+                let resolved = destinations[filename.lowercased()]
+                    ?? destinations[bareName.lowercased()]
                 let link = VaultLink(
                     from: note.path,
                     target: parsed.target,

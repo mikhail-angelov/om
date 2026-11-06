@@ -25,6 +25,7 @@ final class VaultEditorModel: ObservableObject {
     var editorResolvedLinkIdentifiers: Set<String> { workspace.editorResolvedLinkIdentifiers }
     var expandedFolders: Set<String> { workspace.expandedFolders }
     var sortOrder: VaultSortOrder { workspace.sortOrder }
+    var sidebarWidth: Double { workspace.sidebarWidth }
     var searchResults: [VaultSearchMatch] { workspace.searchResults }
     var searchNameMatches: [String] { workspace.searchNameMatches }
     var backlinks: [String] { workspace.backlinks }
@@ -32,6 +33,9 @@ final class VaultEditorModel: ObservableObject {
     var status: NoteStatus { workspace.status }
     var canGoBack: Bool { workspace.canGoBack }
     var canGoForward: Bool { workspace.canGoForward }
+    var isSecurityConfigured: Bool { workspace.isSecurityConfigured }
+    var isUnlocked: Bool { workspace.isUnlocked }
+    func isEncrypted(_ path: String) -> Bool { workspace.isEncrypted(path) }
     var errorMessage: String? { adapterError ?? workspace.errorMessage }
 
     func openVault(at url: URL) throws {
@@ -92,6 +96,20 @@ final class VaultEditorModel: ObservableObject {
     }
     func followWikiLinkFromUI(_ identifier: String) { captureError { try workspace.followWikiLink(identifier) } }
     func saveFromUI() { captureError { try workspace.saveActiveNote() } }
+    func setPasswordFromUI(_ password: String) { changed { captureError { try workspace.setPassword(password) } } }
+    func unlockFromUI(with password: String) { changed { captureError { try workspace.unlock(password: password) } } }
+    func lockFromUI() {
+        flushPendingSave()
+        changed { workspace.lock() }
+    }
+    func encryptNoteFromUI(at path: String) {
+        flushPendingSave()
+        captureError { try workspace.encryptNote(at: path) }
+    }
+    func decryptNoteFromUI(at path: String) {
+        flushPendingSave()
+        captureError { try workspace.decryptNote(at: path) }
+    }
     func createNoteFromUI() { captureError { try workspace.createNote() } }
     func createFolderFromUI(named name: String) { captureError { try workspace.createFolder(named: name) } }
     func renameNoteFromUI(at path: String, to name: String) {
@@ -113,6 +131,9 @@ final class VaultEditorModel: ObservableObject {
         changed { workspace.setFolderExpanded(path, expanded: expanded) }
     }
     func setSortOrderFromUI(_ order: VaultSortOrder) { changed { workspace.setSortOrder(order) } }
+    /// Not routed through `changed`: remembering the width must not redraw the
+    /// column the user is still dragging.
+    func rememberSidebarWidthFromUI(_ width: Double) { workspace.setSidebarWidth(width) }
     func refreshForExternalChangesFromUI() { captureError { try workspace.refreshForExternalChanges() } }
 
     func clearError() {

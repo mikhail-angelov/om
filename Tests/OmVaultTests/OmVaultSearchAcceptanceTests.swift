@@ -151,6 +151,7 @@ final class OmVaultSearchAcceptanceTests: XCTestCase {
                 Match(path: "Beta.md", line: 3, text: "Beta mentions quark on line three."),
                 Match(path: "Beta.md", line: 5, text: "A QUARK in uppercase appears on line five of Beta."),
                 Match(path: "Notes/Nested.md", line: 3, text: "A nested note also mentions quark on line three."),
+                Match(path: "notes.txt", line: 1, text: "quark appears in this plain text file, which is indexed and searched like any other note."),
             ],
             "every case-insensitive substring match must be reported with note-relative path, one-based line and full line text"
         )
@@ -175,6 +176,7 @@ final class OmVaultSearchAcceptanceTests: XCTestCase {
                 "Beta.md:3",
                 "Beta.md:5",
                 "Notes/Nested.md:3",
+                "notes.txt:1",
             ],
             "matches must be sorted ascending by path, then numerically by line"
         )
@@ -182,15 +184,18 @@ final class OmVaultSearchAcceptanceTests: XCTestCase {
 
     // MARK: - Criterion 3
 
-    /// The search visits all indexed Markdown notes — top-level, nested, and
-    /// with a space in the filename — and never searches non-Markdown files.
-    func testSearchVisitsAllMarkdownNotesIncludingNestedAndSpacedNamesButNotNonMarkdown() throws {
-        // Prove the non-Markdown fixtures really contain the query term, so
-        // their absence from the results is meaningful rather than vacuous.
-        let txt = try String(contentsOf: vaultURL.appendingPathComponent("notes.txt"), encoding: .utf8)
-        let png = try String(contentsOf: vaultURL.appendingPathComponent("image.png"), encoding: .utf8)
-        XCTAssertTrue(txt.localizedCaseInsensitiveContains("quark"), "the fixture text file must contain the query term")
-        XCTAssertTrue(png.localizedCaseInsensitiveContains("quark"), "the fixture image file must contain the query term")
+    /// The search visits every text file in the vault — top-level, nested, with
+    /// a space in the filename, and not only Markdown — and never searches a
+    /// file whose bytes are not text.
+    func testSearchVisitsEveryTextFileIncludingNestedAndSpacedNamesButNotBinary() throws {
+        // Prove the binary fixture really contains the query term, so its
+        // absence from the results is meaningful rather than vacuous.
+        let png = try Data(contentsOf: vaultURL.appendingPathComponent("image.png"))
+        XCTAssertTrue(
+            png.range(of: Data("quark".utf8)) != nil,
+            "the fixture image file must contain the query term"
+        )
+        XCTAssertTrue(png.contains(0), "the fixture image file must really be binary")
 
         let (result, matches) = try runSearch("quark")
         XCTAssertEqual(result.exitCode, 0, "`om search <vault> quark` must exit 0")
@@ -199,12 +204,12 @@ final class OmVaultSearchAcceptanceTests: XCTestCase {
         let matchedPaths = Set(list.map(\.path))
         XCTAssertEqual(
             matchedPaths,
-            Set(["A Note With Spaces.md", "Alpha.md", "Beta.md", "Notes/Nested.md"]),
-            "the search must visit every indexed Markdown note — top-level, nested, and with a space in the filename"
+            Set(["A Note With Spaces.md", "Alpha.md", "Beta.md", "Notes/Nested.md", "notes.txt"]),
+            "the search must visit every indexed text file — top-level, nested, with a space in the filename, and not only Markdown"
         )
         XCTAssertFalse(
-            matchedPaths.contains { ($0 as NSString).pathExtension.lowercased() != "md" },
-            "no non-Markdown file may appear in the search results"
+            matchedPaths.contains("image.png"),
+            "a file whose bytes are not text must never appear in the search results"
         )
     }
 

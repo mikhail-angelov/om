@@ -1,1 +1,1 @@
-This is a plain text file, not a Markdown note, and must be excluded from the index.
+A plain text file. The vault shows every file, so this one is indexed too.

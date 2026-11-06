@@ -29,10 +29,11 @@ public struct VaultSearcher: Sendable {
         var matches: [VaultSearchMatch] = []
 
         for note in inventory.notes {
-            let contents = try String(
-                contentsOf: root.appendingPathComponent(note.path),
-                encoding: .utf8
-            )
+            // Sealed and binary files are in the inventory but have no lines to
+            // match: a search must not report bytes it cannot read.
+            guard let contents = try VaultFile.text(
+                at: root.appendingPathComponent(note.path)
+            ) else { continue }
 
             for (index, line) in contents.components(separatedBy: .newlines).enumerated()
             where line.range(of: query, options: .caseInsensitive) != nil {

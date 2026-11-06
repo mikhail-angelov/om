@@ -1,4 +1,5 @@
 import Foundation
+import OmCrypto
 import OmVault
 
 public enum VaultTreeItemKind: String, Codable, Sendable {
@@ -83,6 +84,8 @@ public enum VaultWorkspaceError: LocalizedError, Equatable {
     case occupied(String)
     case invalidName(String)
     case unresolvedLink(String)
+    case locked(String)
+    case notText(String)
 
     public var errorDescription: String? {
         switch self {
@@ -92,6 +95,8 @@ public enum VaultWorkspaceError: LocalizedError, Equatable {
         case .occupied(let path): "A file or folder already exists at: \(path)"
         case .invalidName(let name): "Invalid name: \(name)"
         case .unresolvedLink(let target): "No note matches the link: \(target)"
+        case .locked(let path): "Unlock the vault to open: \(path)"
+        case .notText(let path): "Om opens text files only: \(path)"
         }
     }
 }
@@ -136,6 +141,20 @@ public final class VaultWorkspace {
     public private(set) var history: [String] = []
     public private(set) var historyIndex = -1
 
+    /// The width the sidebar was last left at, in points.
+    public var sidebarWidth: Double {
+        let stored = preferences.double(forKey: Self.sidebarWidthKey)
+        return stored > 0 ? stored : Self.defaultSidebarWidth
+    }
+
+    /// Records a drag of the sidebar divider. Deliberately silent: nothing on
+    /// screen reads this back, and publishing it during a drag would relayout
+    /// the very column being dragged.
+    public func setSidebarWidth(_ width: Double) {
+        guard width > 0, abs(width - sidebarWidth) >= 1 else { return }
+        preferences.set(width, forKey: Self.sidebarWidthKey)
+    }
+
     public var activeTab: VaultTab? {
         guard let activeTabID else { return nil }
         return tabs.first { $0.id == activeTabID }
@@ -172,10 +191,19 @@ public final class VaultWorkspace {
     /// Not scoped to a vault: it is what tells the next launch which vault to
     /// reopen at all.
     private static let lastVaultKey = "om.lastVault"
+    /// Also not scoped to a vault: the sidebar is a property of the window,
+    /// and a window that forgets its proportions has to be re-dragged on every
+    /// launch.
+    private static let sidebarWidthKey = "om.sidebar.width"
+    private static let defaultSidebarWidth = 260.0
 
     private let logger: any EventRecording
     private let preferences: UserDefaults
     private let linkInspector: VaultLinkInspector
+    private let security = VaultSecurity()
+    /// The unlocked vault key, held in memory only. Locking drops it, and
+    /// nothing ever writes it down.
+    private var vaultKey: VaultKey?
     private var linksReport = VaultLinksReport(links: [], broken: [])
     private var diskSignature = ""
 
@@ -191,6 +219,7 @@ public final class VaultWorkspace {
 
     public func openVault(at url: URL) throws {
         vaultURL = url.standardizedFileURL
+        vaultKey = nil
         loadPreferences()
         tabs = []
         activeTabID = nil
@@ -312,15 +341,7 @@ public final class VaultWorkspace {
         do {
             let root = try requireVault()
             let report = try VaultRenamer().rename(vaultAt: root, from: path, to: newName)
-            for index in tabs.indices {
-                if tabs[index].path == report.renamed.from { tabs[index].path = report.renamed.to }
-                tabs[index].history = tabs[index].history.map {
-                    $0 == report.renamed.from ? report.renamed.to : $0
-                }
-            }
-            try rebuildIndex()
-            refreshTabTitles()
-            refreshActiveDetails()
+            try retarget(report.renamed.from, to: report.renamed.to)
             logger.record(level: .info, event: "note.renamed", fields: [
                 "from": .string(report.renamed.from),
                 "to": .string(report.renamed.to),
@@ -394,12 +415,10 @@ public final class VaultWorkspace {
     }
 
     public func saveActiveNote() throws {
-        guard let root = vaultURL, let index = activeTabIndex else {
-            throw VaultWorkspaceError.noActiveNote
-        }
+        guard let index = activeTabIndex else { throw VaultWorkspaceError.noActiveNote }
         let path = tabs[index].path
         let source = EditorMarkupAdapter.decode(tabs[index].text)
-        try source.write(to: root.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        try writeSource(source, at: path)
         tabs[index].text = EditorMarkupAdapter.encode(source)
         tabs[index].isDirty = false
         try rebuildIndex()
@@ -411,9 +430,8 @@ public final class VaultWorkspace {
     public func followWikiLink(_ identifier: String) throws {
         guard let index = activeTabIndex else { throw VaultWorkspaceError.noActiveNote }
         let sourcePath = tabs[index].path
-        if tabs[index].isDirty, let root = vaultURL {
-            let source = EditorMarkupAdapter.decode(tabs[index].text)
-            try source.write(to: root.appendingPathComponent(sourcePath), atomically: true, encoding: .utf8)
+        if tabs[index].isDirty {
+            try writeSource(EditorMarkupAdapter.decode(tabs[index].text), at: sourcePath)
             tabs[index].isDirty = false
             try rebuildIndex()
         }
@@ -465,6 +483,116 @@ public final class VaultWorkspace {
         }
         history = Array(history.prefix(historyIndex + 1)) + [path]
         historyIndex = history.count - 1
+    }
+
+    // MARK: - The vault password
+
+    /// Whether this vault has a password at all, and whether it is open right
+    /// now. One password covers every sealed note in the vault.
+    public var isSecurityConfigured: Bool {
+        guard let vaultURL else { return false }
+        return security.isConfigured(vaultAt: vaultURL)
+    }
+
+    public var isUnlocked: Bool { vaultKey != nil }
+
+    public func isEncrypted(_ path: String) -> Bool { VaultFile.isEncrypted(path) }
+
+    /// Gives the vault its password for the first time and leaves it unlocked.
+    public func setPassword(_ password: String) throws {
+        do {
+            let root = try requireVault()
+            vaultKey = try security.configure(vaultAt: root, password: password)
+            try rebuildIndex()
+            logger.record(level: .info, event: "vault.secured", fields: [
+                "path": .string(root.path),
+            ])
+        } catch {
+            reject(error)
+            throw error
+        }
+    }
+
+    public func unlock(password: String) throws {
+        do {
+            let root = try requireVault()
+            vaultKey = try security.unlock(vaultAt: root, password: password)
+            logger.record(level: .info, event: "vault.unlocked", fields: [
+                "path": .string(root.path),
+            ])
+        } catch {
+            reject(error)
+            throw error
+        }
+    }
+
+    /// Drops the key and closes every tab holding a decrypted note, so nothing
+    /// readable is left on screen or in memory.
+    public func lock() {
+        vaultKey = nil
+        for tab in tabs where VaultFile.isEncrypted(tab.path) {
+            closeTab(id: tab.id)
+        }
+        refreshActiveDetails()
+        logger.record(level: .info, event: "vault.locked", fields: [
+            "path": .string(vaultURL?.path ?? ""),
+        ])
+    }
+
+    /// Seals a note: `Note.md` becomes `Note.omenc`, readable only while the
+    /// vault is unlocked.
+    public func encryptNote(at path: String) throws {
+        do {
+            let root = try requireVault()
+            guard let vaultKey else { throw VaultWorkspaceError.locked(path) }
+            flushDirtyTab(at: path)
+            let sealed = try security.encrypt(
+                fileAt: root.appendingPathComponent(path), with: vaultKey
+            )
+            try retarget(path, to: relativePath(of: sealed, root: root))
+            logger.record(level: .info, event: "note.encrypted", fields: ["path": .string(path)])
+        } catch {
+            reject(error)
+            throw error
+        }
+    }
+
+    public func decryptNote(at path: String) throws {
+        do {
+            let root = try requireVault()
+            guard let vaultKey else { throw VaultWorkspaceError.locked(path) }
+            flushDirtyTab(at: path)
+            let plain = try security.decrypt(
+                fileAt: root.appendingPathComponent(path), with: vaultKey
+            )
+            try retarget(path, to: relativePath(of: plain, root: root))
+            logger.record(level: .info, event: "note.decrypted", fields: ["path": .string(path)])
+        } catch {
+            reject(error)
+            throw error
+        }
+    }
+
+    private func flushDirtyTab(at path: String) {
+        guard let index = tabs.firstIndex(where: { $0.path == path }), tabs[index].isDirty else {
+            return
+        }
+        try? writeSource(EditorMarkupAdapter.decode(tabs[index].text), at: path)
+        tabs[index].isDirty = false
+    }
+
+    /// Points every tab and history entry at a note's new path, after a rename
+    /// or a trip through the seal.
+    private func retarget(_ oldPath: String, to newPath: String) throws {
+        for index in tabs.indices {
+            if tabs[index].path == oldPath { tabs[index].path = newPath }
+            tabs[index].history = tabs[index].history.map { $0 == oldPath ? newPath : $0 }
+        }
+        history = history.map { $0 == oldPath ? newPath : $0 }
+        try rebuildIndex()
+        refreshTabTitles()
+        refreshActiveDetails()
+        savePreferences()
     }
 
     public func performSearch(_ query: String) throws {
@@ -525,7 +653,6 @@ public final class VaultWorkspace {
         } else if addToHistory, activeTabIndex != nil {
             try navigateActiveTab(to: path, historyEvent: nil)
         } else {
-            let note = notes.first { $0.path == path }!
             let source = try readSource(at: path)
             let tab = VaultTab(
                 id: UUID(), path: path, title: displayName(for: path),
@@ -570,9 +697,7 @@ public final class VaultWorkspace {
     }
 
     private func load(path: String, into index: Int) throws {
-        let note = notes.first { $0.path == path }
         tabs[index].path = path
-        _ = note
         tabs[index].title = displayName(for: path)
         tabs[index].text = EditorMarkupAdapter.encode(try readSource(at: path))
         tabs[index].isDirty = false
@@ -580,14 +705,41 @@ public final class VaultWorkspace {
     }
 
     /// The name shown for a note: its file name, never its first heading.
-    /// The two diverge the moment a note is renamed.
+    /// The two diverge the moment a note is renamed. Markdown is the vault's
+    /// native kind, so `.md` is dropped and every other extension is kept —
+    /// `notes.txt` and `notes.md` are different notes and must read as such.
+    /// A seal is not a kind, so `.omenc` is dropped too.
     private func displayName(for path: String) -> String {
-        ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let filename = (path as NSString).lastPathComponent as NSString
+        let bare = VaultFile.isEncrypted(path) ? filename.deletingPathExtension as NSString : filename
+        return bare.pathExtension.lowercased() == "md" ? bare.deletingPathExtension : bare as String
     }
 
+    /// A note's text, whatever the file is: sealed notes are opened with the
+    /// vault key, and a file that is not text at all is refused rather than
+    /// shown as mangled characters.
     private func readSource(at path: String) throws -> String {
         guard let vaultURL else { throw VaultWorkspaceError.noVault }
-        return try String(contentsOf: vaultURL.appendingPathComponent(path), encoding: .utf8)
+        let url = vaultURL.appendingPathComponent(path)
+        if VaultFile.isEncrypted(path) {
+            guard let vaultKey else { throw VaultWorkspaceError.locked(path) }
+            return try security.readText(at: url, with: vaultKey)
+        }
+        guard let text = try VaultFile.text(at: url) else {
+            throw VaultWorkspaceError.notText(path)
+        }
+        return text
+    }
+
+    private func writeSource(_ source: String, at path: String) throws {
+        guard let vaultURL else { throw VaultWorkspaceError.noVault }
+        let url = vaultURL.appendingPathComponent(path)
+        if VaultFile.isEncrypted(path) {
+            guard let vaultKey else { throw VaultWorkspaceError.locked(path) }
+            try security.writeText(source, to: url, with: vaultKey)
+        } else {
+            try source.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     private func rebuildIndex() throws {
@@ -616,7 +768,8 @@ public final class VaultWorkspace {
             options: []
         ).compactMap { child in
             let values = try child.resourceValues(forKeys: keys)
-            guard values.isSymbolicLink != true else { return nil }
+            guard values.isSymbolicLink != true,
+                  !VaultFile.isHidden(child.lastPathComponent) else { return nil }
             let path = relativePath.isEmpty ? child.lastPathComponent : "\(relativePath)/\(child.lastPathComponent)"
             let modified = values.contentModificationDate ?? .distantPast
             if values.isDirectory == true {
@@ -626,13 +779,13 @@ public final class VaultWorkspace {
                     children: try buildTree(at: child, relativePath: path, titles: titles)
                 )
             }
-            guard values.isRegularFile == true, child.pathExtension.lowercased() == "md" else { return nil }
+            guard values.isRegularFile == true else { return nil }
             // The file name, not the note's first heading. Renaming a note
             // changes the file and leaves the heading alone, so a tree showing
             // the heading looked as though the rename had not happened.
             return VaultTreeItem(
                 kind: .note, path: path,
-                title: child.deletingPathExtension().lastPathComponent,
+                title: displayName(for: path),
                 modifiedAt: modified
             )
         }
@@ -645,6 +798,10 @@ public final class VaultWorkspace {
                 modifiedAt: $0.modifiedAt, children: sorted($0.children)
             )
         }.sorted { lhs, rhs in
+            // Folders first, whatever the sort is. A tree that interleaves them
+            // reads as a flat list of names, and reversing the order should not
+            // move the folders to the bottom.
+            if lhs.kind != rhs.kind { return lhs.kind == .folder }
             let comparison: ComparisonResult
             switch sortOrder.field {
             case .name:
@@ -789,7 +946,7 @@ public final class VaultWorkspace {
             let path = relativePath(of: url, root: root)
             if values.isDirectory == true {
                 parts.append("D|\(path)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)")
-            } else if values.isRegularFile == true, url.pathExtension.lowercased() == "md" {
+            } else if values.isRegularFile == true {
                 parts.append("F|\(path)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)|\(values.fileSize ?? 0)")
             }
         }

@@ -1,1 +1,1 @@
-quark also appears in this plain text file, which must not be searched.
+quark appears in this plain text file, which is indexed and searched like any other note.

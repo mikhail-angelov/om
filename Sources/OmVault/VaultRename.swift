@@ -65,21 +65,40 @@ public struct VaultRenamer: Sendable {
         to newName: String
     ) throws -> VaultRenameReport {
         let inventory = try VaultIndexer().index(vaultAt: vaultURL)
+        let requestedOldName = (oldName as NSString).lastPathComponent
+        let requestedNewName = (newName as NSString).lastPathComponent
         let oldBaseName = normalizedName(oldName)
-        let newBaseName = normalizedName(newName)
         guard !oldBaseName.isEmpty else { throw VaultRenameError.invalidName(oldName) }
-        guard !newBaseName.isEmpty else { throw VaultRenameError.invalidName(newName) }
+        guard !requestedNewName.isEmpty else { throw VaultRenameError.invalidName(newName) }
 
+        // Either spelling finds the note: the filename as it sits on disk, or
+        // the bare name links use.
         guard let target = inventory.notes.first(where: {
-            noteBaseName($0).caseInsensitiveCompare(oldBaseName) == .orderedSame
+            ($0.path as NSString).lastPathComponent
+                .caseInsensitiveCompare(requestedOldName) == .orderedSame
+                || noteBaseName($0).caseInsensitiveCompare(oldBaseName) == .orderedSame
         }) else {
             throw VaultRenameError.noteNotFound(oldName)
         }
 
+        // A rename keeps the file's kind: `notes.txt` becomes `<new>.txt`, and
+        // an extension the caller already spelled out is not appended twice.
+        let targetExtension = (target.path as NSString).pathExtension
+        let spellsTargetExtension = (requestedNewName as NSString).pathExtension
+            .caseInsensitiveCompare(targetExtension) == .orderedSame
+        let destinationFilename = targetExtension.isEmpty || spellsTargetExtension
+            ? requestedNewName
+            : "\(requestedNewName).\(targetExtension)"
+        let targetBaseName = noteBaseName(target)
+        let newBaseName = targetExtension.isEmpty
+            ? destinationFilename
+            : (destinationFilename as NSString).deletingPathExtension
+        guard !newBaseName.isEmpty else { throw VaultRenameError.invalidName(newName) }
+
         let targetDirectory = (target.path as NSString).deletingLastPathComponent
         let destinationPath = targetDirectory.isEmpty
-            ? "\(newBaseName).md"
-            : "\(targetDirectory)/\(newBaseName).md"
+            ? destinationFilename
+            : "\(targetDirectory)/\(destinationFilename)"
         let root = vaultURL.standardizedFileURL
         let destinationURL = root.appendingPathComponent(destinationPath)
         let fileManager = FileManager.default
@@ -102,11 +121,12 @@ public struct VaultRenamer: Sendable {
         for note in inventory.notes {
             guard let expectedCount = expectedCounts[note.path] else { continue }
             let noteURL = root.appendingPathComponent(note.path)
-            let contents = try String(contentsOf: noteURL, encoding: .utf8)
+            guard let contents = try VaultFile.text(at: noteURL) else { continue }
             let rewritten = rewriteLinks(
                 in: contents,
-                from: oldBaseName,
-                to: newBaseName
+                from: targetBaseName,
+                to: newBaseName,
+                fileExtension: targetExtension
             )
             guard rewritten.count == expectedCount else {
                 throw VaultRenameError.inconsistentLinks(note.path)
@@ -155,7 +175,8 @@ public struct VaultRenamer: Sendable {
     private func rewriteLinks(
         in contents: String,
         from oldName: String,
-        to newName: String
+        to newName: String,
+        fileExtension: String
     ) -> (contents: String, count: Int) {
         var fence: Fence?
         var replacementCount = 0
@@ -174,7 +195,9 @@ public struct VaultRenamer: Sendable {
                 return line
             }
 
-            let rewritten = rewriteLinksInLine(line, from: oldName, to: newName)
+            let rewritten = rewriteLinksInLine(
+                line, from: oldName, to: newName, fileExtension: fileExtension
+            )
             replacementCount += rewritten.count
             return rewritten.line
         }
@@ -185,7 +208,8 @@ public struct VaultRenamer: Sendable {
     private func rewriteLinksInLine(
         _ line: String,
         from oldName: String,
-        to newName: String
+        to newName: String,
+        fileExtension: String
     ) -> (line: String, count: Int) {
         guard let expression = try? NSRegularExpression(pattern: #"\[\[([^\[\]\r\n]+)\]\]"#) else {
             return (line, 0)
@@ -218,14 +242,18 @@ public struct VaultRenamer: Sendable {
             )
             let target = rawTarget.substring(with: trimmedRange)
             let filename = (target as NSString).lastPathComponent
-            let extensionName = (filename as NSString).pathExtension
-            let targetBaseName = extensionName.lowercased() == "md"
+            let linkExtension = (filename as NSString).pathExtension
+            // A link may spell the renamed file's extension out or leave it
+            // off; whichever it does is what the rewritten link keeps.
+            let spellsExtension = !linkExtension.isEmpty
+                && linkExtension.caseInsensitiveCompare(fileExtension) == .orderedSame
+            let targetBaseName = spellsExtension
                 ? (filename as NSString).deletingPathExtension
                 : filename
             guard targetBaseName.caseInsensitiveCompare(oldName) == .orderedSame else { continue }
 
-            let replacementFilename = extensionName.lowercased() == "md"
-                ? "\(newName).\(extensionName)"
+            let replacementFilename = spellsExtension
+                ? "\(newName).\(linkExtension)"
                 : newName
             let directory = (target as NSString).deletingLastPathComponent
             let replacement = directory.isEmpty || directory == "."

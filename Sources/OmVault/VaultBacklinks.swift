@@ -29,10 +29,13 @@ public struct VaultBacklinkFinder: Sendable {
             ? (requestedFilename as NSString).deletingPathExtension
             : requestedFilename
 
+        // Either spelling finds the note: the bare name, or the filename as it
+        // sits on disk — the only way to ask about `notes.txt` unambiguously.
         guard let target = inventory.notes.first(where: { note in
             let filename = (note.path as NSString).lastPathComponent
-            return (filename as NSString).deletingPathExtension
-                .caseInsensitiveCompare(requestedName) == .orderedSame
+            return filename.caseInsensitiveCompare(requestedFilename) == .orderedSame
+                || (filename as NSString).deletingPathExtension
+                    .caseInsensitiveCompare(requestedName) == .orderedSame
         }) else {
             throw VaultBacklinkError.noteNotFound(noteName)
         }

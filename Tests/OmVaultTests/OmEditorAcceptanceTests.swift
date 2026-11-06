@@ -201,10 +201,10 @@ final class OmEditorAcceptanceTests: XCTestCase {
         )
     }
 
-    /// The completed note-index interface is unchanged: it still returns
-    /// nested notes and filenames containing spaces, with the same titles, and
-    /// still excludes non-Markdown files.
-    func testOmVaultNoteIndexBehaviorIsUnchanged() throws {
+    /// The completed note-index interface still returns nested notes and
+    /// filenames containing spaces with the same titles, and now returns the
+    /// vault's other files alongside them.
+    func testOmVaultNoteIndexReturnsEveryFile() throws {
         let inventory = try VaultIndexer().index(vaultAt: indexVaultURL)
 
         let paths = inventory.notes.map(\.path)
@@ -221,9 +221,9 @@ final class OmEditorAcceptanceTests: XCTestCase {
         XCTAssertEqual(byPath["A Note With Spaces.md"]?.title, "Spaced Out")
         XCTAssertEqual(byPath["Nested/Deep.md"]?.title, "Deep Note")
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             inventory.notes.contains { ($0.path as NSString).pathExtension.lowercased() != "md" },
-            "the note-index interface must still exclude non-Markdown files"
+            "the note-index interface must return the vault's non-Markdown files too"
         )
     }
 
