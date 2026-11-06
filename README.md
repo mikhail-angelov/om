@@ -4,6 +4,9 @@ A local Markdown vault for macOS: a folder of files, a headless engine that
 understands the links between them, a command-line tool, and an editor with
 live preview.
 
+<img height="480" alt="image" src="https://github.com/user-attachments/assets/31a40f30-e4e8-47cd-97d4-9a81d662e1db" />
+
+
 Nothing is synced anywhere. A vault is a directory; the notes in it are plain
 files you can edit with anything else. Every file in the folder is listed, not
 only the Markdown: a `.txt` or a `.json` opens and edits like a note, a file
